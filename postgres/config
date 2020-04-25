@@ -1,0 +1,7 @@
+ngx_addon_name=ngx_http_postgres_module 
+HTTP_MODULES="$HTTP_MODULES ngx_http_postgres_module"
+CORE_INCS="$CORE_INCS /e/postgresql-11.5/build/include"
+CORE_LIBS="$CORE_LIBS /e/postgresql-11.5/build/lib/libpq.a"
+
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_postgres_module.c"
+
