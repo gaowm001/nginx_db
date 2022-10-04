@@ -1,18 +1,21 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include <ngx_config.h>
-#include <libpq-fe.h>
-#include <pthread.h>
+#include "libpq-fe.h"
+//#include <pthread.h>
+//#include <QCoreApplication>
+//#include <QString>
 #include <sys/time.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdlib.h>
 
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;/*³õÊ¼»¯»¥³âËø*/
-pthread_cond_t  cond = PTHREAD_COND_INITIALIZER;//init cond
+
+//pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;/**/
+//pthread_cond_t  cond = PTHREAD_COND_INITIALIZER;//init cond
 struct s_conn {
-	PGconn *conn;
+    PGconn *conn;
     struct s_conn *n;
 };
 struct s_param {
@@ -29,10 +32,20 @@ static unsigned int storednum=0;
 //static struct connchain *unuseconn=NULL;
 
 static char* conninfo;
+
 long timeout_ms = 1000; // wait time 1000ms
 static struct s_conn *punconn=NULL;
 
-static PGconn* getconn() {
+typedef struct {
+ ngx_str_t ed;
+} ngx_http_echo_loc_conf_t;
+
+//struct MemoryStruct {
+//  char *memory;
+//  size_t size;
+//};
+
+/*static PGconn* getconn() {
     struct timespec abstime;
     struct timeval now;
     gettimeofday(&now, NULL);
@@ -40,15 +53,16 @@ static PGconn* getconn() {
     abstime.tv_sec=now.tv_sec + nsec / 1000000000 + timeout_ms / 1000;
     abstime.tv_nsec=nsec % 1000000000;
     int ret=pthread_cond_timedwait(&cond, &mutex, &abstime);
+    PGconn *conn;
     if (ret!=0) {
-        PGconn *conn=PQconnectdb(conninfo);
+        conn=PQconnectdb(conninfo);
         if ((ConnStatusType)PQstatus(conn)!=CONNECTION_OK) {PQfinish(conn);return NULL;}
         return conn;
     }
     pthread_mutex_lock(&mutex);
     struct s_conn *tempconn=punconn;
     while (tempconn!=NULL) {
-        PGconn *conn=tempconn->conn;
+        conn=tempconn->conn;
         if (PQstatus(conn)==CONNECTION_OK) {
             punconn=tempconn->n;
             pthread_mutex_unlock(&mutex);
@@ -61,7 +75,7 @@ static PGconn* getconn() {
         punconn=tempconn;
     }
     pthread_mutex_unlock(&mutex);
-    PGconn *conn=PQconnectdb(conninfo);
+    conn=PQconnectdb(conninfo);
     if ((ConnStatusType)PQstatus(conn)!=CONNECTION_OK) {PQfinish(conn);return NULL;}
     return conn;
 }
@@ -84,31 +98,44 @@ static void freeconn(PGconn *conn) {
     newconn->n=punconn;
     punconn=newconn;
     pthread_mutex_unlock(&mutex);
-}
+}*/
 
 static ngx_int_t init_func(ngx_cycle_t *cycle) {
     char buf[2048];
     char *p;
     static PGconn *conn;
     FILE *fn=NULL;
-    fn=fopen("postgres.conf","r");
-    if (fn==NULL) {fclose(fn) ;return NGX_ERROR;}
+    ngx_log_error(NGX_LOG_DEBUG,cycle->log,0,"progres init:");
+//    std::string app1=QCoreApplication::applicationDirPath().toStdString();
+//    qDebug()<<app1;
+//    QDebug(QCoreApplication::applicationDirPath());
+    fn=fopen("conf/postgres.conf","r");
+    if (fn==NULL)
+    {
+//        fclose(fn) ;
+        return NGX_ERROR;
+    }
     while (!feof(fn)) {
         memset(buf,0,sizeof(buf));
         if (fgets(buf,2048,fn)==NULL) continue;
         if (strncmp(buf,"conn=",5)!=0) continue;
         if (conninfo!=NULL) free(conninfo);
-        if (buf[strlen(buf)-1]=='\n') buf[strlen(buf)-1]=0;
-        p=strchr(buf,0);
+//        if (buf[strlen(buf)-1]=='\n') buf[strlen(buf)-1]=0;
+        p=strchr(buf,'\n');
         if (p==NULL) continue;
-        conninfo=(char *)malloc(p-buf-5);
+        conninfo=(char *)malloc(p-buf-4);
         strncpy(conninfo,buf+5,p-buf-5);
+        conninfo[p-buf-5]=0;
     }
     fclose(fn);
     if (conninfo==NULL) return NGX_ERROR;
-    conn=getconn();
-    if (conn==NULL) {return NGX_ERROR;}
+    ngx_log_error(NGX_LOG_DEBUG,cycle->log,0,conninfo);
+    conn=PQconnectdb(conninfo);
+//    if (conn==NULL) {return NGX_ERROR;}
 //    if ((ConnStatusType)PQstatus(conn)!=CONNECTION_OK) {PQfinish(conn);return NGX_ERROR;}
+//    conn=PQconnectdb(conninfo);
+    if ((ConnStatusType)PQstatus(conn)!=CONNECTION_OK) {PQfinish(conn);return NGX_ERROR;}
+
     if (params!=NULL) {
         for (unsigned int i=0;i<storednum;i++) {
             free(params[i].storedprocname);
@@ -120,41 +147,40 @@ static ngx_int_t init_func(ngx_cycle_t *cycle) {
         }
         free(params);
     }
-    PGresult *res=PQexec(conn,"select count(*) from pg_proc t1 left join pg_namespace t2 on t1.pronamespace=t2.oid where t2.nspname not in ('pg_catalog','information_schema')");
-    if (PQresultStatus(res)!=PGRES_TUPLES_OK) {PQclear(res);freeconn(conn);return NGX_ERROR;}
+    PGresult *res=PQexec(conn,"select count(*) from pg_proc t1 left join pg_namespace t2 on t1.pronamespace=t2.oid where t2.nspname not in ('pg_catalog','information_schema','private')");
+    if (PQresultStatus(res)!=PGRES_TUPLES_OK) {
+        PQclear(res);
+        PQfinish(conn);
+//        freeconn(conn);
+        return NGX_ERROR;
+    }
     storednum=atoi(PQgetvalue(res,0,0));
     params=(struct s_param *)malloc(sizeof(struct s_param)*storednum);
     PQclear(res);
-//    res=PQexec(conn,"select params,' '||nspname||'.'||proname func,substr(proargnames::varchar,2,char_length(proargnames::varchar)-2)||',' proargnames,pronargs from (select string_agg(sort,',') params,oid from (select '$'||row_number() over(partition by oid)||'::'||t3.typname  sort,t.oid from (select t1.oid,regexp_split_to_table(t1.proargtypes::varchar,' ') aa from pg_proc t1 left join pg_namespace t2 on t1.pronamespace=t2.oid where t2.nspname not in ('pg_catalog','information_schema')) t  left join pg_type t3 on t.aa=t3.oid::varchar) t group by oid) t left join pg_proc t1 on t1.oid=t.oid left join pg_namespace t2 on t1.pronamespace=t2.oid order by func");
-    res=PQexec(conn,"select string_agg('$'||sort1||'::'||typname,',' order by sort1) params,func,proargnames,pronargs from (select row_number() over(partition by func order by sort) sort1,t3.typname typname,t.func,t.pronargs,proargnames from (select row_number() over() sort,t.* from (select ' '||t2.nspname||'.'||t1.proname func,t1.pronargs,substr(proargnames::varchar,2,char_length(proargnames::varchar)-2)||',' proargnames,proargtypes,regexp_split_to_table(t1.proargtypes::varchar,' ') aa from pg_proc t1 left join pg_namespace t2 on t1.pronamespace=t2.oid  where t2.nspname not in ('pg_catalog','information_schema')) t ) t left join pg_type t3 on t.aa=t3.oid::varchar ) t group by func,pronargs,proargnames");
-    if (PQresultStatus(res)!=PGRES_TUPLES_OK) {PQclear(res);freeconn(conn);return NGX_ERROR;}
+    ngx_log_error(NGX_LOG_DEBUG,cycle->log,0,"progres init2");
+    res=PQexec(conn,"select string_agg('$'||sort1||'::'||typname,',' order by sort1) params,func,proargnames,pronargs from (select row_number() over(partition by func order by sort) sort1,t3.typname typname,t.func,t.pronargs,proargnames from (select row_number() over() sort,t.* from (select ' '||t2.nspname||'.'||t1.proname func,t1.pronargs,substr(proargnames::varchar,2,char_length(proargnames::varchar)-2)||',' proargnames,proargtypes,regexp_split_to_table(t1.proargtypes::varchar,' ') aa from pg_proc t1 left join pg_namespace t2 on t1.pronamespace=t2.oid  where t2.nspname not in ('pg_catalog','information_schema','private')) t ) t left join pg_type t3 on t.aa=t3.oid::varchar ) t group by func,pronargs,proargnames");
+    if (PQresultStatus(res)!=PGRES_TUPLES_OK) {
+        PQclear(res);
+        PQfinish(conn);
+//        freeconn(conn);
+        return NGX_ERROR;
+    }
+    ngx_log_error(NGX_LOG_DEBUG,cycle->log,0,"progres init3");
     for (unsigned int i=0;i<storednum;i++) {
         char *temp1 = PQgetvalue(res,i,1);
         int len1 = strlen(temp1);
-//        printf("temp1=%s, len1=%d\n",temp1,len1);
         params[i].storedprocname=(char*)malloc(len1+1);
         strcpy(params[i].storedprocname,temp1);
-        //memcpy(params[i].storedprocname,PQgetvalue(res,i,1),strlen(PQgetvalue(res,i,1)));
-        //params[i].storedprocname[strlen(PQgetvalue(res,i,1))]=0;
         params[i].storedprocname[0]=47;
         params[i].nParams=atoi(PQgetvalue(res,i,3));
         char *temp2 = PQgetvalue(res,i,0);
         int len2 = strlen(temp2);
-//        printf("temp2=%s, len2=%d\n",temp2,len2);
         params[i].command=(char*)malloc(9+len1+len2);
-//         strcpy(params[i].command,"select");
         strcpy(params[i].command,"select");
-        //memcpy(params[i].command,"select",6);
         strcpy(params[i].command+6,temp1);
         strcpy(params[i].command+6+len1,"(");
-        //memcpy(params[i].command+6,PQgetvalue(res,i,1),strlen(PQgetvalue(res,i,1)));
-        //params[i].command[6+strlen(PQgetvalue(res,i,1))]='(';
         strcpy(params[i].command+7+len1,temp2);
-        //memcpy(params[i].command+7+strlen(PQgetvalue(res,i,1)),PQgetvalue(res,i,0),strlen(PQgetvalue(res,i,0)));
         strcpy(params[i].command+7+len1+len2,")");
-        //params[i].command[7+strlen(PQgetvalue(res,i,1))+strlen(PQgetvalue(res,i,0))]=')';
-        //params[i].command[8+strlen(PQgetvalue(res,i,1))+strlen(PQgetvalue(res,i,0))]=0;
-//        params[i].command="select operator.login($1::varchar,$2::varchar,$3::varchar,$4::numeric)";
         params[i].paramnames=(char**)malloc(params[i].nParams*sizeof(char*));
         *strchr(params[i].storedprocname,'.')=47;
         char *k=PQgetvalue(res,i,2);
@@ -167,7 +193,10 @@ static ngx_int_t init_func(ngx_cycle_t *cycle) {
         }
     }
     PQclear(res);
-    freeconn(conn);
+//    freeconn(conn);
+    PQfinish(conn);
+
+    ngx_log_error(NGX_LOG_DEBUG,cycle->log,0,"progres init ok");
     return NGX_OK;
 }
 
@@ -179,12 +208,14 @@ static ngx_int_t ngx_http_procpostgres_handler(ngx_http_request_t *req) {
     static PGconn *conn;
     unsigned int len=req->uri.len;
     char* uri=malloc(len+1);
+
     memcpy(uri,req->uri.data,len);
+    ngx_log_error(NGX_LOG_DEBUG, req->connection->log, 0, uri);
     uri[len]=0;
-    for (int i=0;i<len;i++) {
+    for (unsigned int i=0;i<len;i++) {
         if (req->uri.data[i]>='A'&&req->uri.data[i]<='Z') uri[i]+=32;
     }
-    int index,low=0,high=storednum-1,cmp;
+    int index=0,low=0,high=storednum-1,cmp=0;
     while (low<=high) {
         index=(low+high)/2;
 //        if (len<strlen(params[index].storedprocname)) len=strlen(params[index].storedprocname);
@@ -194,7 +225,7 @@ static ngx_int_t ngx_http_procpostgres_handler(ngx_http_request_t *req) {
         else high=index-1;
     }
     free(uri);
-    if (cmp!=0) return NGX_ERROR;
+    if (cmp!=0) return NGX_ERROR;    
     char **paramValues;
     paramValues=(char**)calloc(params[index].nParams,sizeof(char*));
     unsigned int i=0;
@@ -206,7 +237,7 @@ static ngx_int_t ngx_http_procpostgres_handler(ngx_http_request_t *req) {
         char * arg=malloc(k-req->args.data-i+1);
         memcpy(arg,req->args.data+i,k-req->args.data-i);
         arg[k-req->args.data-i]=0;
-        if (k!=NULL&&j-k>1) {
+        if (k!=NULL&&j-k>=1) {
             for (int i1=0;i1<params[index].nParams;i1++) {
                 if (strcmp(params[index].paramnames[i1],arg)==0) {
                     paramValues[i1]=malloc(j-k+1);
@@ -246,20 +277,24 @@ static ngx_int_t ngx_http_procpostgres_handler(ngx_http_request_t *req) {
         i=j-req->args.data+2;
         free(arg);
     }
-    conn=getconn();
-    if (conn==NULL) {ngx_log_error(NGX_LOG_EMERG, req->connection->log, 0, "out of connnect!");return NGX_ERROR;}
-    PGresult *res=PQexecParams(conn,params[index].command,params[index].nParams,NULL,paramValues,NULL,NULL,0);
-    freeconn(conn);
+    conn=PQconnectdb(conninfo);
+    if ((ConnStatusType)PQstatus(conn)!=CONNECTION_OK) {PQfinish(conn);return NGX_ERROR;}
+//    if (conn==NULL) {ngx_log_error(NGX_LOG_EMERG, req->connection->log, 0, "out of connnect!");return NGX_ERROR;}
+    PGresult *res=PQexecParams(conn,params[index].command,params[index].nParams,NULL,(const char *const*)paramValues,NULL,NULL,0);
+//    freeconn(conn);
+    PQfinish(conn);
     ExecStatusType et=PQresultStatus(res);
-    for (int i=0;i<params[index].nParams;i++) free(paramValues[i]);free(paramValues);
+    for (int i=0;i<params[index].nParams;i++) free(paramValues[i]);
+    free(paramValues);
+    unsigned char* aa;
     if (et!=PGRES_TUPLES_OK) {
         ngx_log_error(NGX_LOG_EMERG, req->connection->log, 0, PQresultErrorField(res,PG_DIAG_MESSAGE_PRIMARY),PQresultErrorField(res,PG_DIAG_INTERNAL_QUERY));
-        PQclear(res);
-        return NGX_ERROR;
+        aa=(unsigned char*)malloc(strlen(PQresultErrorMessage(res)));
+        memcpy(aa,PQresultErrorMessage(res),strlen(PQresultErrorMessage(res)));
+    } else {
+      aa=malloc(strlen(PQgetvalue(res,0,0))+1);
+      memcpy(aa,PQgetvalue(res,0,0),strlen(PQgetvalue(res,0,0)));
     }
-    u_char* aa;
-    aa=malloc(strlen(PQgetvalue(res,0,0))+1);
-    memcpy(aa,PQgetvalue(res,0,0),strlen(PQgetvalue(res,0,0)));
     req->headers_out.status = 200;
 //    req->headers_out.content_length_n = strlen(PQgetvalue(res,0,0));
     ngx_str_set(&req->headers_out.content_type, "text/html;charset=utf-8");
@@ -279,24 +314,45 @@ static ngx_int_t ngx_http_procpostgres_handler(ngx_http_request_t *req) {
     return ngx_http_output_filter(req, &out);
 };
 
+//static size_t UrlCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+//    size_t realsize = size * nmemb;
+//    struct MemoryStruct *mem = (struct MemoryStruct *)userp;
+//    mem->memory = (char*)realloc(mem->memory, mem->size + realsize + 1);
+//    if (mem->memory == NULL) {
+//        /* out of memory! */
+//        printf("not enough memory (realloc returned NULL)\n");
+//        return 0;
+//    }
+
+//    memcpy(&(mem->memory[mem->size]), contents, realsize);
+//    mem->size += realsize;
+//    mem->memory[mem->size] = 0;
+
+//    return realsize;}
+
+
 static ngx_int_t ngx_http_querypostgres_handler(ngx_http_request_t *req) {
     static PGconn *conn;
     unsigned int len=req->uri.len;
     char* uri=malloc(len);
     memcpy(uri,req->uri.data+1,len-1);
     uri[len-1]=0;
-    conn=getconn();
+    ngx_log_error(NGX_LOG_DEBUG,req->connection->log,0,"progres query");
+    conn=PQconnectdb(conninfo);
+    if ((ConnStatusType)PQstatus(conn)!=CONNECTION_OK) {PQfinish(conn);return NGX_ERROR;}
+//    if (conn==NULL) {ngx_log_error(NGX_LOG_EMERG, req->connection->log, 0, "out of connnect!");return NGX_ERROR;}
     if (conn==NULL) {ngx_log_error(NGX_LOG_EMERG, req->connection->log, 0, "out of connnect!");return NGX_ERROR;}
     PGresult *res=PQexec(conn,uri);
-    freeconn(conn);
+    //    freeconn(conn);
+        PQfinish(conn);
     ExecStatusType et=PQresultStatus(res);
     char* aa;
     if (et==PGRES_EMPTY_QUERY ) {
-        aa=malloc(strlen("empty query!"));
+        aa=malloc(strlen("empty query!")+1);
         strcpy(aa,"empty query!");
     }
     else if (et==PGRES_COMMAND_OK ) {
-        aa=malloc(strlen("command ok"));
+        aa=malloc(strlen("command ok")+1);
         strcpy(aa,"command ok");
 
     }
@@ -348,8 +404,8 @@ static ngx_int_t ngx_http_querypostgres_handler(ngx_http_request_t *req) {
     ngx_http_send_header(req);
     ngx_buf_t *b;
     b = ngx_pcalloc(req->pool, sizeof(ngx_buf_t));
-    b->pos = aa;
-    b->last = aa + strlen(aa);
+    b->pos = (u_char*)aa;
+    b->last = (u_char *)aa + strlen(aa);
   //  b->pos = t.data;
   //  b->last = t.data+t.len;
     b->memory = 1;
@@ -375,6 +431,24 @@ static char *ngx_http_querypostgres(ngx_conf_t *cf, ngx_command_t *cmd, void *co
   corecf->handler = ngx_http_querypostgres_handler;
   return NGX_CONF_OK;
 }
+
+
+//static char *ngx_http_smspostgres(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+//  ngx_http_core_loc_conf_t *corecf;
+//  corecf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+//  corecf->handler = ngx_http_smspostgres_handler;
+//  return NGX_CONF_OK;
+//}
+//static ngx_int_t ngx_http_postgres_init(ngx_conf_t *cf) {
+//    ngx_http_handler_pt *h;
+//    ngx_http_core_main_conf_t *cmcf;
+//    cmcf=ngx_http_conf_get_module_main_conf(cf,ngx_http_core_module);
+//    h=ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
+//    if (h==NULL) {
+//        return NGX_ERROR;
+//    }
+//    *h=ngx_http_postgre
+//}
 
 static ngx_command_t postgres_commands[] = {
     {
@@ -406,6 +480,15 @@ static ngx_http_module_t ngx_http_postgres_module_ctx = {
     NULL,
     NULL
 };
+
+//ngx_module_t ngx_http_postgres_module = {
+//  NGX_MODULE_V1,
+//  &ngx_http_postgres_module_ctx,
+//  postgres_commands,
+//  NGX_HTTP_MODULE,
+//  NULL, NULL ,NULL,  NULL, NULL, NULL, NULL,
+//  NGX_MODULE_V1_PADDING
+//};
 
 ngx_module_t ngx_http_postgres_module = {
   NGX_MODULE_V1,
