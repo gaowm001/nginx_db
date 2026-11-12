@@ -321,3 +321,218 @@ sudo systemctl disable --now nginx    # 停用 systemd 版，继续用 /opt/ngin
   # 若 pid 文件已被清空导致 ExecStop 停不掉手工实例（restart 失败），改用：
   # sudo systemctl stop nginx; sudo pkill -x nginx; sudo rm -f /opt/nginx/logs/nginx.pid; sudo systemctl start nginx
   ```
+
+## 十一、系统运行原理
+
+### 11.1 总体链路
+
+本项目是“**nginx + PostgreSQL 函数**”的瘦后端架构：没有 Java/Python/Node 等应用层，
+HTTP 请求由 nginx 的 `ngx_http_postgres_module` 直接转发为对 PostgreSQL 函数的调用，
+函数返回 JSON，前端单页应用（SPA）负责全部界面渲染。
+
+```
+浏览器 (html/index.html + core.js / app.js / modules.js)
+   │  POST /func/{schema}/{函数名}   参数为 form 表单
+   ▼
+nginx (含 ngx_http_postgres_module，配置见 /opt/nginx/conf)
+   │  将 HTTP 参数映射为函数入参，调用 PostgreSQL 函数
+   ▼
+PostgreSQL
+   ├─ gm.check_login(token, 权限点)   ← 每个业务函数入口统一鉴权
+   ├─ 业务函数（sysinfo.* / gm.* / 未来 hr.*、fin.*、erp.* …）
+   └─ gm.returnjson(错误码, 数据)     ← 统一 JSON 包装：{errorcode, message, info}
+```
+
+### 11.2 一次典型请求的完整流程（以“查询员工列表”为例）
+
+1. **登录换取 token**：前端调 `sysinfo.login`，校验口令后写 `sysinfo.operinfo.tokenkey`
+   与 `tokentime`（有效期），返回 token 与该员工的权限点集合 `actions`。
+2. **携带 token 调接口**：前端 `api()` 统一 `POST /func/hr/emp_query`，参数带
+   `token=...` 及查询条件。
+3. **函数入口鉴权**：`hr.emp_query` 第一行执行
+   `v_check:=gm.check_login(p_token, 9201)`——校验 token 存在且未过期（比对
+   `tokenkey/tokentime`），再校验权限点 `9201` 是否在该员工的授权链上
+   （按 `sysaction.idpath` 前缀匹配，admin 经根节点 100 自动获得全部权限）。
+   校验失败直接返回 `100005/100012/100008`，不执行任何业务 SQL。
+4. **业务处理**：分页 + 模糊查询（参数化 SQL，禁止拼字符串），结果用
+   `gm.returnjson(0, json_build_object('total', n, 'rows', ...))` 返回。
+5. **前端渲染**：`app.js` 依 `modules.js` 的模块声明渲染表格/表单/树，错误码非 0
+   时按 `errorcode` 表提示。
+
+### 11.3 权限模型（新增模块必须理解）
+
+- `sysinfo.sysaction` 是**权限树**：`systemid` 所属系统、`sysactionid` 节点号、
+  `idpath` 全路径（如 `100.9113.224`）、`actionid` 操作点（为空表示菜单/目录节点，
+  鉴权时取 `coalesce(actionid, sysactionid)`）。
+- **菜单节点**（如 9113 接口文档）控制前端是否显示页面；**操作节点**（如 224 修改
+  接口注释）控制某个写操作是否可调用。两者都挂在对应父节点之下。
+- 员工授权写入 `sysinfo.operinfo`/关联表，登录时展开成 `actions` 数组下发前端；
+  后端函数仍会再次校验（前端隐藏按钮只是体验优化，**不是安全边界**）。
+
+### 11.4 前端机制
+
+- `modules.js` 用 `P()` 声明每个模块：模块 ID、标题、菜单分组、权限点、接口 base、
+  列定义、表单字段、操作权限、树形标志等。**大多数 CRUD 页面零定制**，由 `app.js`
+  通用渲染（列表 + 搜索 + 分页 + 弹窗表单 + 删除/恢复 + 导出）。
+- 少数特殊页面（如接口文档 `#/gethelp`）在 `app.js` 路由中特判渲染。
+- 静态资源版本号在 `index.html`（当前 `v=10`）：改动 js/css 后必须 +1，否则浏览器
+  缓存旧文件。
+
+### 11.5 函数缓存与发布（重要）
+
+nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。因此：
+- 新增/改名/删除 PostgreSQL 函数后，必须 `sudo systemctl restart nginx`（或
+  stop + 清 pid + start，见第九章 9.3），否则 HTTP 层报“函数不存在”。
+- 只改函数体（`CREATE OR REPLACE` 同签名）不影响缓存，可不用重启。
+
+## 十二、二次开发指南：新增业务系统（人事 / 财务 / ERP 等）
+
+在本项目下做一套新业务（人事、财务、ERP、CRM…），本质上是重复四件事：
+**建表 → 写函数 → 配权限 → 声明前端模块**。数据库即后端，不需要另起应用服务。
+
+### 12.1 总体思路与目录规划
+
+| 步骤 | 产物 | 说明 |
+|---|---|---|
+| 1. 规划 schema | `CREATE SCHEMA hr;` | 一个业务域一个 schema：hr（人事）、fin（财务）、erp… |
+| 2. 建业务表 | `hr.emp` 等表 | `OWNER gm`，主键 `bigint`，建议带逻辑删除/审计字段 |
+| 3. 写函数 | `hr.emp_query/add/edit/merge/del/undel` | 入口 `gm.check_login`，出口 `gm.returnjson` |
+| 4. 配权限 | `sysinfo.sysaction` 节点 | 菜单节点 + 各操作节点，`INSERT ... ON CONFLICT DO NOTHING` |
+| 5. 声明前端 | `html/assets/modules.js` 的 `P()` | 大多数 CRUD 页面零 JS 定制 |
+| 6. 部署验证 | psql 应用 + nginx restart + 冒烟 | 见 12.5 上线清单 |
+
+### 12.2 方式一：gen_module.py 一键生成（推荐，覆盖大部分场景）
+
+标准单表、主子表、树形表三类需求**不要手写**，用生成器（工具会同时更新 SQL dump、
+modules.js、index.html 版本号、README、TEST_PLAN）：
+
+```bash
+cd /home/ad/nginx-build/nginx-1.30.6/src/modules/nginx_db
+
+# 1) 参照 tools/examples/ 写一份 JSON 定义（kind: single / parent_child / tree）
+cp tools/examples/example_notice.json tools/my_hr_emp.json
+#    编辑 my_hr_emp.json：表名、中文名、主键、菜单/操作权限号、字段列表…
+
+# 2) 仅生成文件（不落库），先人工 review 产出的 SQL 与前端配置
+python3 tools/gen_module.py --def tools/my_hr_emp.json
+
+# 3) 事务内试跑（执行后回滚，只验证 SQL 能否通过，不污染库）
+python3 tools/gen_module.py --def tools/my_hr_emp.json --apply-tx
+
+# 4) 正式应用 + 部署前端
+python3 tools/gen_module.py --def tools/my_hr_emp.json --apply --deploy
+sudo systemctl restart nginx     # 新函数必须重启 nginx 才能经 HTTP 访问
+```
+
+生成器已处理的细节：函数注释（`COMMENT ON FUNCTION`，可在接口文档页在线维护）、
+分页/模糊查询、逻辑删除与恢复、树形 `idpath/idlevel/idcount` 递归维护、
+父子表 `upname` 联查、循环父级与“有子级禁删”校验、权限节点幂等插入。
+
+### 12.3 方式二：手工开发（复杂业务，如 ERP 单据联动）
+
+超出“单表 CRUD”的业务（多表事务、审批流、跨域统计）手工写函数，骨架照抄现有模块：
+
+```sql
+CREATE SCHEMA IF NOT EXISTS hr;
+
+CREATE TABLE IF NOT EXISTS hr.emp(
+  id         bigint PRIMARY KEY,
+  empno      varchar(32) NOT NULL,
+  empname    varchar(64) NOT NULL,
+  deptid     bigint,
+  hiredate   date,
+  state      smallint DEFAULT 1,          -- 1 在职 0 离职
+  isdel      smallint DEFAULT 0,
+  updatetime timestamp DEFAULT now()
+);
+ALTER TABLE hr.emp OWNER TO gm;
+
+COMMENT ON TABLE hr.emp IS '人事-员工档案';
+
+CREATE OR REPLACE FUNCTION hr.emp_query(p_token varchar, p_page int, p_pagesize int, p_key varchar)
+RETURNS json LANGUAGE plpgsql SECURITY DEFINER AS $$
+declare v_check json; v_rows json; v_total bigint;
+begin
+  v_check:=gm.check_login(p_token, 9201);                 -- ① 鉴权：权限点见 12.4
+  if v_check->>'errorcode'<>'0' then return v_check; end if;
+  select count(*) into v_total from hr.emp
+   where isdel=0 and (p_key is null or empname ilike '%'||p_key||'%' or empno ilike '%'||p_key||'%');
+  select array_to_json(array_agg(row_to_json(t))) into v_rows
+    from (select * from hr.emp
+           where isdel=0 and (p_key is null or empname ilike '%'||p_key||'%' or empno ilike '%'||p_key||'%')
+           order by id desc limit coalesce(p_pagesize,20) offset coalesce(p_page,1)*coalesce(p_pagesize,20)-coalesce(p_pagesize,20)) t;
+  return gm.returnjson(0, json_build_object('total',v_total,'rows',coalesce(v_rows,'[]'::json)));
+end $$;
+ALTER FUNCTION hr.emp_query(varchar,int,int,varchar) OWNER TO gm;
+```
+
+写操作（add/edit/del）同理：入口鉴权 → 业务校验（重复、状态、余额/库存等，返回
+对应错误码）→ `INSERT/UPDATE/DELETE` → `gm.returnjson(0)`。多表联动的单据（如 ERP
+出入库同时扣库存）必须放在**同一个函数体内**完成，依赖 plpgsql 异常自动回滚，
+不要让前端分两次调用拼接事务。
+
+### 12.4 权限节点设置（以人事系统为例）
+
+在 `sysinfo.sysaction` 中为人事系统建立自己的菜单与操作节点（编号建议按域分段，
+避开已用的 91xx/224 等）：
+
+```sql
+-- 菜单目录：人事管理（挂在根 100 之下）
+INSERT INTO sysinfo.sysaction (isused,idpath,idlevel,idcount,upid,params,systemid,sysactionid,sysactionname,actionid,isdefault)
+VALUES (1,'100.9200',2,0,100,NULL,100,9200,'人事管理',NULL,NULL) ON CONFLICT DO NOTHING;
+-- 菜单：员工档案 + 六个操作点（query 沿用菜单号，写操作各占一号）
+INSERT INTO sysinfo.sysaction (isused,idpath,idlevel,idcount,upid,params,systemid,sysactionid,sysactionname,actionid,isdefault)
+VALUES (1,'100.9200.9201',3,0,9200,NULL,100,9201,'员工档案',NULL,NULL),
+       (1,'100.9200.9201.9211',4,0,9201,NULL,100,9211,'新增员工',9211,NULL),
+       (1,'100.9200.9201.9212',4,0,9201,NULL,100,9212,'修改员工',9212,NULL),
+       (1,'100.9200.9201.9213',4,0,9201,NULL,100,9213,'删除员工',9213,NULL)
+ON CONFLICT DO NOTHING;
+```
+
+- 函数内 `check_login` 的权限点必须与 `actionid` 一致：query 用菜单节点号（9201），
+  add/edit/del 分别用 9211/9212/9213。
+- 给具体员工授权：走“员工权限”页面（operinfo 模块）勾选；admin 无需配置（根 100 自动全权）。
+- 财务、ERP 同理另起号段（如 93xx、94xx），**编号一经使用不要复用/改动**。
+
+### 12.5 上线清单（每个新模块都走一遍）
+
+1. SQL 已同步进 `extension/ngxdb_postgresql.sql`（唯一事实来源，手工开发也要回写 dump）。
+2. `--apply`（或 psql 执行）到在用库；`sysaction` 插入用了 `ON CONFLICT DO NOTHING`，可重复执行。
+3. `--deploy` 或手动拷贝 `html/` 到 `/opt/nginx/html/ngxdb`，`index.html` 版本号 +1。
+4. `sudo systemctl restart nginx`（新函数必须重启才能经 HTTP 访问）。
+5. 冒烟：无 token→100005；伪 token→100012；admin 带 token→0；写操作各自权限点生效。
+6. 按 `test/TEST_PLAN.md` 模板补充并执行该模块的测试场景。
+
+## 十三、开发注意事项（重要）
+
+1. **鉴权不可省略**：每个业务函数第一行必须 `gm.check_login`。前端隐藏菜单/按钮
+   只是体验，不是安全边界；没有后端校验的接口等于裸奔。
+2. **统一返回结构**：业务函数一律返回 `gm.returnjson(错误码, 数据)`，错误码沿用
+   `sysinfo.errorcode` 已有值（100005 未登录、100012 token 无效、100008 无权限、
+   100010 参数为空、100014/100016/100017/100018 树与记录类错误）；确需新错误码时
+   先在 errorcode 表登记，前端提示文案依赖它。
+3. **OWNER 与权限最小化**：业务表/函数 `OWNER gm`；只有像 `help_edit` 这类必须写
+   系统目录（`pg_description`）的函数才用 `OWNER postgres`。严禁用超级用户跑业务，
+   严禁在函数里 `EXECUTE` 拼接用户输入。
+4. **SQL 注入防护**：值一律参数化/绑定；模糊查询注意转义 `%` `_`；标识符
+   （表名/列名/排序字段）绝不能来自前端拼接——用白名单映射。
+5. **事务边界**：一次 HTTP 调用 = 一个函数 = 一个事务。多表联动放在同一函数内，
+   让 plpgsql 异常自动回滚；不要靠前端顺序调用多个接口“拼事务”。
+6. **主键与分页**：主键用 `bigint`（PG18 下函数参数也声明 `bigint`，不要用无类型
+   字面量重载）；列表查询必须带 `total` + 分页，避免全表拉取。
+7. **nginx 函数缓存**：新增/改名/删除函数后必须重启 nginx（第九章 9.3 的 pid 坑）；
+   仅改函数体不用重启。
+8. **dump 与在用库同步**：`extension/ngxdb_postgresql.sql` 是唯一事实来源。任何在
+   在用库手工执行的 DDL/权限变更，必须回写 dump（或直接用 gen_module.py 生成），
+   否则新环境安装会缺对象。
+9. **不要改动核心函数签名**：`sysinfo.*`、`gm.*` 已有函数（login/logout、check_login、
+   returnjson、changepassword 等）被框架与 nginx 配置依赖；扩展请新增函数，不改旧签名。
+10. **前端字段类型**：modules.js 字段类型决定渲染与校验（文本/数字/日期/下拉/多行
+    文本等），新增类型先看 `app.js` 的表单渲染是否已支持，避免重复造轮子。
+11. **静态资源版本号**：改了 js/css 必须 +1 `index.html` 的 `?v=`，否则用户浏览器
+    缓存旧脚本导致“改了没生效”。
+12. **先试跑再上线**：SQL 一律先 `--apply-tx`（事务回滚验证）或临时库导入验证，
+    再 `--apply`；权限节点插入是幂等的，可放心重复执行。
+13. **测试随代码走**：每个新模块在 `test/TEST_PLAN.md` 登记场景并执行；核心链路
+    （鉴权失败、分页、增删改查、树/父子特有逻辑）至少各一条。
+
