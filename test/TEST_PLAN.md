@@ -20,13 +20,14 @@ PostgreSQL: gm.check_login(令牌鉴权+权限校验) → 业务函数 → gm.re
    返回 {"errorcode":0/错误码, "message":"...", "info":{...}}
 ```
 
-### 1.2 功能模块与函数分布（共 79 个函数）
+### 1.2 功能模块与函数分布（共 81 个函数）
 
 | 模式 | 数量 | 函数 |
 |---|---|---|
-| gm | 8 | actionupdate、check_login、gethelp、gettoken、gettokene、http_get、http_post、returnjson |
+| gm | 8 | actionupdate、audit_trigger、check_login、gettoken、gettokene、http_get、http_post、returnjson |
+| operator | 1 | changepassword |
 | public | 1 | _ensure_roles |
-| sysinfo | 68 | login、loginaccount、regaccount、aes_encrypt、aes_decrypt、errorcode_query、actions_query、serverlog_query、systeminfo_×6、sysaction_×6、sysorg_×6、orgtype_×6、operinfo_×6、operinfoorg_×6、operinfopermission_×6、roleinfo_×6、province_×6、city_×6 |
+| sysinfo | 71 | login、loginaccount、regaccount、aes_encrypt、aes_decrypt、hash_pass_trigger、help_query、help_edit、errorcode_query、actions_query、serverlog_query、systeminfo_×6、sysaction_×6、sysorg_×6、orgtype_×6、operinfo_×6、operinfoorg_×6、operinfopermission_×6、roleinfo_×6、province_×6、city_×6 |
 | conn / crypto | 0 | 无自定义函数（crypto 仅供 pgcrypto 扩展对象） |
 
 > 每个 CRUD 模块固定 6 个函数：`_add / _edit / _merge / _del / _undel / _query`。
@@ -142,7 +143,7 @@ N1 口令哈希迁移后原口令仍可登录（admin/123456→0）且 operinfo.
 
 ---
 
-## 4. 函数覆盖矩阵（79/79）
+## 4. 函数覆盖矩阵（81/81，含 2 个等保触发器函数）
 
 | 函数 | 用例 | 函数 | 用例 | 函数 | 用例 |
 |---|---|---|---|---|---|

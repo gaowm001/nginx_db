@@ -18,7 +18,7 @@ nginx
                         ▼
                    PostgreSQL 18
                      · schema：sysinfo / gm / conn / crypto
-                     · 19 张表、77 个函数（登录、鉴权、CRUD、AES 令牌等）
+                     · 19 张表、81 个函数（登录、鉴权、CRUD、AES 令牌、审计触发器等）
                      · 扩展：plpython3u、pgcrypto
 ```
 
@@ -43,6 +43,13 @@ nginx_db/
 ├── oracle/                    # nginx 自研 Oracle 模块（可选，需 Oracle Instant Client）
 │   ├── ngx_http_oracle_module.c
 │   └── config
+├── tools/                      # 开发与运维工具
+│   ├── gen_module.py           # 新业务模块一键生成器（JSON → SQL/前端/文档）
+│   ├── examples/               # 生成器示例定义（single/parent_child/tree）
+│   ├── secure_deploy.sh        # 等保整改一键 root 部署（TLS/限流/ngxapp/备份 cron）
+│   ├── nginx.conf.template     # 安全加固 nginx 配置模板
+│   ├── backup.sh               # 每日 pg_dump 备份（保留 14 份）
+│   └── ngxdb-backup.cron       # 备份 cron 模板
 ├── README.md                  # 本文件
 └── install.sh                 # 一键安装脚本
 ```
@@ -125,7 +132,7 @@ make -j"$(nproc)" && sudo make install
 sudo -u postgres psql -c "CREATE ROLE gm   LOGIN PASSWORD 'gmo@12345';"
 sudo -u postgres psql -c "CREATE ROLE conn LOGIN PASSWORD 'gmo@12345';"
 sudo -u postgres createdb -O gm ngxdb
-# 导入（含 schema / 79 函数 / 19 表 / 数据 / admin 账号）
+# 导入（含 schema / 81 函数 / 19 表 / 数据 / admin 账号）
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d ngxdb -f /path/to/nginx_db/extension/ngxdb_postgresql.sql
 # nginx 模块会向 public.serverlog 写调用日志，需建表
 sudo -u postgres psql -d ngxdb -c "CREATE TABLE IF NOT EXISTS public.serverlog(logid bigserial primary key, clientip inet, pckname varchar(255), funcname varchar(255), content text, logtime timestamp, serverip inet, params text, operatorid bigint, res text, head text);"
@@ -333,7 +340,7 @@ sudo systemctl disable --now nginx    # 停用 systemd 版，继续用 /opt/ngin
   - 权限节点 **9113「接口文档」**，挂在权限树根「系统 100」之下（`idpath=100.9113`）。
     admin 因持有根节点 100 的授权自动可用（`gm.check_login` 按 idpath 前缀匹配），其他账号按需授权。
   - 新增 **`sysinfo.help_query(p_token)`**（原 gethelp 改名）：校验登录态与权限 9113 后，返回当前库全部业务函数的
-    元数据 JSON（`schemaname/funcname/arguments/returntype/description`，当前共 116 条）。
+    元数据 JSON（`schemaname/funcname/arguments/returntype/description`，当前共 118 条，随函数增加自动增长）。
   - 新增 **`sysinfo.help_edit(p_token,p_schemaname,p_funcname,p_description,p_arguments)`**（权限 224，挂于 9113 之下）：
     修改指定函数的注释（写 `pg_description`，owner=postgres 以获得系统目录写权限）。
   - 前端「全系统管理」分组新增**接口文档**页面（`#/gethelp`）：表格展示 + 模糊搜索
@@ -590,7 +597,7 @@ ON CONFLICT DO NOTHING;
 | 接口 | 场景 | 平均 | 最快 | 最慢 |
 |---|---|---|---|---|
 | `sysinfo/login` | 登录（PG 加密 + 写 token） | **12.4ms** | 9.2ms | 22.0ms |
-| `sysinfo/help_query` | 116 行函数元数据大 JSON | **7.8ms** | 7.1ms | 9.2ms |
+| `sysinfo/help_query` | 全量函数元数据大 JSON（实测时 116 行） | **7.8ms** | 7.1ms | 9.2ms |
 | `sysinfo/sysorg_query` | 部门树（递归 CTE） | **8.0ms** | 7.1ms | 9.4ms |
 | `sysinfo/errorcode_query` | 普通分页列表 | **7.8ms** | 7.2ms | 9.3ms |
 
