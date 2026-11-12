@@ -182,19 +182,23 @@ function renderTable(m){
   if(m.tree){
     var hit={},vis;
     if(q){
-      /* 搜索：命中节点连同其各级父节点一起显示 */
+      /* 搜索：命中节点连同其各级父节点一起显示（idpath 为"根→自身"完整链，前缀即各级祖先） */
       rows.forEach(function(r){
         if(m.cols.some(function(c){var v=r[c.f];return v!=null&&String(v).toLowerCase().indexOf(q)>=0;})){
           var p=String(r.idpath||'');
           if(!p)hit[String(r[m.pk])]=1;
-          else p.split('.').forEach(function(s){hit[s]=1;});
+          else{var parts=p.split('.');for(var i=1;i<=parts.length;i++)hit[parts.slice(0,i).join('.')]=1;}
         }
       });
-      vis=rows.filter(function(r){return hit[String(r[m.pk])];});
+      vis=rows.filter(function(r){var p=String(r.idpath||'');return p?!!hit[p]:!!hit[String(r[m.pk])];});
     }else if(_state.node!=null){
-      /* 右栏只显示当前选中节点的直接下级 */
-      var pre=_state.node+'.';
-      vis=rows.filter(function(r){return String(r.idpath||'')===pre+String(r[m.pk]);});
+      /* 右栏只显示当前选中节点的直接下级：_state.node 为选中节点 idpath，
+         直接下级的 idpath = 该前缀 + '.' + 末段（其后不得再有 '.'） */
+      var pre=String(_state.node)+'.';
+      vis=rows.filter(function(r){
+        var p=String(r.idpath||'');
+        return p.indexOf(pre)===0&&p.indexOf('.',pre.length)<0;
+      });
     }else{
       /* 未选择节点：显示顶级节点 */
       vis=rows.filter(function(r){return treeDepth(r)===0;});
@@ -226,7 +230,7 @@ function nameOf(m,r){
 function renderExplorer(m,visible){
   /* 首次进入自动展开第一层 */
   if(!Object.keys(_state.expanded).length){
-    _state.rows.forEach(function(r){if(treeDepth(r)===0)_state.expanded[String(r[m.pk])]=1;});
+    _state.rows.forEach(function(r){if(treeDepth(r)===0)_state.expanded[String(r.idpath||r[m.pk])]=1;});
   }
   renderTree(m);
   var ps=_state.ps,pages=Math.max(1,Math.ceil(visible.length/ps));
@@ -251,13 +255,14 @@ function renderCrumbs(m,count){
     cr.innerHTML='<span class="crumb-item">'+icon('home',13)+'</span><span>全部顶级节点</span><span class="crumb-sep">/</span><span class="crumb-item muted">'+count+' 项</span>';
     return;
   }
-  var byId={};_state.rows.forEach(function(r){byId[String(r[m.pk])]=r;});
+  var byId={};_state.rows.forEach(function(r){var p=String(r.idpath||'');if(p)byId[p]=r;});
   var cur=byId[String(_state.node)];
   var segs=(cur&&cur.idpath)?String(cur.idpath).split('.'):[String(_state.node)];
   var h='<span class="crumb-item link" data-node="">'+icon('home',13)+'全部</span>';
   segs.forEach(function(sid,i){
-    var r=byId[sid],nm=r?nameOf(m,r):sid;
-    h+='<span class="crumb-sep">/</span><span class="crumb-item'+(i<segs.length-1?' link" data-node="'+esc(sid):' strong')+'">'+esc(nm)+'</span>';
+    var pre2=segs.slice(0,i+1).join('.');
+    var r=byId[pre2],nm=r?nameOf(m,r):sid;
+    h+='<span class="crumb-sep">/</span><span class="crumb-item'+(i<segs.length-1?' link" data-node="'+esc(pre2):' strong')+'">'+esc(nm)+'</span>';
   });
   h+='<span class="crumb-sep">/</span><span class="crumb-item muted">'+count+' 项</span>';
   cr.innerHTML=h;
@@ -267,13 +272,14 @@ function renderCrumbs(m,count){
 function renderTree(m){
   var tp=$('#treePane');if(!tp)return;
   var rows=_state.rows,children={};
+  /* idpath 为"根→自身"完整链：每个节点挂在"父 idpath"（去掉自身末段）之下，顶级挂在 '' */
   rows.forEach(function(r){
-    var d=treeDepth(r),pid='null';
-    if(d>0){var p=String(r.idpath||'').split('.');pid=p[d-1]||'null';}
-    (children[pid]||(children[pid]=[])).push(r);
+    var p=String(r.idpath||''),key='';
+    if(p){var parts=p.split('.');if(parts.length>1)key=parts.slice(0,parts.length-1).join('.');}
+    (children[key]||(children[key]=[])).push(r);
   });
   function nodeHtml(r,depth){
-    var id=String(r[m.pk]),kids=children[id]||[],has=kids.length>0,open=!!_state.expanded[id];
+    var id=String(r.idpath||r[m.pk]),kids=children[id]||[],has=kids.length>0,open=!!_state.expanded[id];
     var h='<div class="tnode'+(_state.node===id?' on':'')+'" style="padding-left:'+(6+depth*16)+'px" data-id="'+esc(id)+'">'
       +'<span class="tw'+(has?'':' leaf')+'" data-toggle="'+(has?id:'')+'" title="'+(has?(open?'折叠':'展开'):'')+'">'+(has?icon(open?'chev':'cher',13):'')+'</span>'
       +(has?icon(open?'folderOpen':'folder',14):'')
@@ -282,7 +288,7 @@ function renderTree(m){
     if(has&&open)kids.forEach(function(k){h+=nodeHtml(k,depth+1);});
     return h;
   }
-  var roots=children['null']||[];
+  var roots=children['']||[];
   var h='<div class="tpane-hd">'+icon('sitemap',14)+'层级导航</div>';
   if(!roots.length)h+='<div class="empty" style="padding:16px">暂无数据</div>';
   roots.forEach(function(r){h+=nodeHtml(r,0);});
@@ -334,7 +340,7 @@ function renderRows(m,pageRows){
         if(isTree&&ci===0){
           var d=treeDepth(r);
           var tp=String(r.idpath==null?'':r.idpath);
-          var hasKids=pageRows.some(function(x){return x.idpath!=null&&x.idpath!==''&&String(x.idpath).indexOf(tp+'.')===0;});
+          var hasKids=tp!==''&&pageRows.some(function(x){var xp=String(x.idpath||'');return xp!==''&&xp.indexOf(tp+'.')===0;});
           if(hasKids){
             td+='<span class="tree-toggle" data-tp="'+esc(tp)+'" title="展开/折叠">'+(collapsed[tp]?'▶':'▼')+'</span>';
           }else{
