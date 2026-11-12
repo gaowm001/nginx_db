@@ -113,6 +113,7 @@ function route(){
   if(!m){$('#content').innerHTML='<div class="empty">无可用模块</div>';return;}
   if(!hasPerm(m.menu)){toast('无权限访问该模块','err');location.replace('#/'+defaultModule());return;}
   $$('#sidebar-nav .nav-item').forEach(function(a){a.classList.toggle('active',a.getAttribute('data-mod')===m.id);});
+  if(m.id==='gethelp'){renderGetHelp(m);return;}
   renderModule(m);
 }
 
@@ -145,6 +146,75 @@ function renderModule(m){
     +'</div>';
   bindToolbar(m);
   loadList(m);
+}
+
+/* ===== 接口文档：只读展示数据库全部函数元数据（sysinfo.gethelp，权限 9113） ===== */
+function renderGetHelp(m){
+  _state.m=m;_state.q='';_state.rows=[];_state.filtered=[];_state.page=1;
+  var tt=$('#topbar-title');if(tt)tt.textContent=m.t;
+  $('#content').innerHTML='<div class="page-head"><div><h1>'+icon(m.ic,22)+' '+esc(m.t)+'</h1>'
+    +'<div class="crumb">NGXDB<i>/</i>'+esc(groupName(m.g))+'<i>/</i>'+esc(m.t)+'</div></div></div>'
+    +'<div class="stats" id="stats"></div>'
+    +'<div class="card"><div class="toolbar">'
+      +'<div class="search">'+icon('search',16)+'<input class="input" id="search-in" placeholder="模糊搜索：模式 / 函数名 / 参数 / 返回类型 / 说明…"></div>'
+      +'<div class="toolbar__spacer"></div>'
+      +'<button class="btn btn--icon" id="api-refresh" title="刷新">'+icon('refresh',18)+'</button>'
+    +'</div><div class="table-wrap" id="tbl"></div><div class="pager" id="pager"></div></div>';
+  $('#api-refresh').addEventListener('click',function(){loadGetHelp(m);});
+  $('#search-in').addEventListener('input',function(){_state.q=this.value;_state.page=1;renderApiRows();});
+  loadGetHelp(m);
+}
+async function loadGetHelp(m){
+  var tbl=$('#tbl');if(!tbl)return;
+  tbl.innerHTML='<div class="empty"><div class="spinner"></div></div>';
+  try{
+    var j=await api(m.base,{token:TOKEN});
+    _state.rows=(j.info&&j.info.rows)||[];
+    renderApiRows();
+  }catch(e){
+    _state.rows=[];_state.filtered=[];
+    tbl.innerHTML='<div class="empty">'+icon('alert',36)+'<div>'+esc(e.message||'加载失败')+'</div></div>';
+    var st=$('#stats');if(st)st.innerHTML='';
+    var pg=$('#pager');if(pg)pg.innerHTML='';
+    if(e.net)toast(e.message,'err');
+  }
+}
+function renderApiRows(){
+  var rows=_state.rows,q=(_state.q||'').toLowerCase();
+  var fs=['schemaname','funcname','arguments','returntype','description'];
+  var filtered=q?rows.filter(function(r){return fs.some(function(f){var v=r[f];return v!=null&&String(v).toLowerCase().indexOf(q)>=0;});}):rows;
+  _state.filtered=filtered;
+  var ps=_state.ps,pages=Math.max(1,Math.ceil(filtered.length/ps));
+  if(_state.page>pages)_state.page=pages;
+  var s=(_state.page-1)*ps,pageRows=filtered.slice(s,s+ps);
+  var st=$('#stats');if(st)st.innerHTML=statCard('list','函数总数',rows.length)+statCard('code','当前显示',filtered.length);
+  var head='<tr><th>模式</th><th>函数名</th><th>参数</th><th>返回类型</th><th>说明</th></tr>';
+  var body=pageRows.length?pageRows.map(function(r){
+    return '<tr><td>'+esc(r.schemaname||'')+'</td>'
+      +'<td><b>'+esc(r.funcname||'')+'</b></td>'
+      +'<td class="nowrap-el" title="'+esc(r.arguments||'')+'">'+esc(r.arguments||'—')+'</td>'
+      +'<td>'+esc(r.returntype||'')+'</td>'
+      +'<td class="nowrap-el" title="'+esc(r.description||'')+'">'+esc(r.description||'—')+'</td></tr>';
+  }).join(''):'<tr><td colspan="5"><div class="empty">'+icon('list',34)+'<div>'+(q?'无匹配结果':'暂无数据')+'</div></div></td></tr>';
+  $('#tbl').innerHTML='<table class="data"><thead>'+head+'</thead><tbody>'+body+'</tbody></table>';
+  /* 分页（结构与通用 renderPager 一致，点击回调走 renderApiRows） */
+  var p=$('#pager');
+  if(p){
+    var btns='<button data-pg="prev" '+(_state.page<=1?'disabled':'')+'>上一页</button>';
+    for(var i=1;i<=pages;i++){
+      if(pages>7&&i>2&&i<pages-1&&Math.abs(i-_state.page)>1){if(btns.slice(-1)!=='…')btns+='<button disabled>…</button>';continue;}
+      btns+='<button data-pg="'+i+'" class="'+(i===_state.page?'active':'')+'">'+i+'</button>';
+    }
+    btns+='<button data-pg="next" '+(_state.page>=pages?'disabled':'')+'>下一页</button>';
+    p.innerHTML='<div class="pager__info">共 '+filtered.length+' 条</div>'+btns;
+    $$('#pager button[data-pg]').forEach(function(b){
+      b.addEventListener('click',function(){
+        var v=b.getAttribute('data-pg');
+        if(v==='prev')_state.page--;else if(v==='next')_state.page++;else _state.page=+v;
+        renderApiRows();
+      });
+    });
+  }
 }
 
 function bindToolbar(m){

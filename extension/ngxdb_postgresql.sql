@@ -184,22 +184,6 @@ $$;
 ALTER FUNCTION gm.check_login(p_token character varying, p_actionid integer) OWNER TO gm;
 
 --
--- Name: gethelp(); Type: FUNCTION; Schema: gm; Owner: gm
---
-
-CREATE FUNCTION gm.gethelp() RETURNS text
-    LANGUAGE plpgsql SECURITY DEFINER
-    AS $$
-	declare v_return text; 
-BEGIN
-   select html1||aa||html2 into v_return from sysinfo.funchtml,(select array_to_json(array_agg(row_to_json(t))) aa from (select nspname a,proname b,description c from pg_proc t1 left join pg_namespace t2 on t1.pronamespace=t2.oid left join pg_description t3 on t1.oid=t3.objoid where t2.nspname in ('public','sysinfo') order by nspname,proname) t) t1 where htmlid=100;
-	RETURN v_return;
-END$$;
-
-
-ALTER FUNCTION gm.gethelp() OWNER TO gm;
-
---
 -- Name: gettoken(); Type: FUNCTION; Schema: gm; Owner: gm
 --
 
@@ -5761,3 +5745,38 @@ end
 $$;
 
 ALTER FUNCTION operator.changepassword(p_token character varying, p_oldpass character varying, p_newpass character varying) OWNER TO gm;
+
+--
+-- 接口文档（2026-11-13）：
+--   1) 权限节点 9113“接口文档”，挂在“系统(100)”之下（idpath=100.9113）；
+--      admin 经根节点 100 的授权自动获得该权限（check_login 按 idpath 前缀匹配）。
+--   2) sysinfo.gethelp：返回当前库所有业务函数的元数据(JSON)，替代原
+--      gm.gethelp()（返回整页 HTML、依赖 sysinfo.funchtml 模板且无鉴权，已删除）。
+--   3) 前端在“全系统管理”分组新增“接口文档”页面渲染该数据。
+--
+
+INSERT INTO sysinfo.sysaction (isused, idpath, idlevel, idcount, upid, params, systemid, sysactionid, sysactionname, actionid, isdefault)
+VALUES (1, '100.9113', 2, 0, 100, NULL, 100, 9113, '接口文档', NULL, NULL)
+ON CONFLICT (sysactionid) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION sysinfo.gethelp(p_token character varying) RETURNS json
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare v_check json;v_rows json;
+begin
+  v_check:=gm.check_login(p_token,9113);
+  if v_check->>'errorcode'<>'0' then return v_check; end if;
+  select array_to_json(array_agg(row_to_json(t))) into v_rows
+    from (select n.nspname schemaname, p.proname funcname,
+                 pg_get_function_arguments(p.oid) arguments,
+                 pg_get_function_result(p.oid) returntype,
+                 coalesce(obj_description(p.oid,'pg_proc'),'') description
+            from pg_proc p join pg_namespace n on p.pronamespace=n.oid
+           where n.nspname<>'information_schema' and n.nspname not like 'pg\_%'
+             and p.prokind='f'
+           order by n.nspname,p.proname) t;
+  return gm.returnjson(0,json_build_object('total',coalesce(json_array_length(v_rows),0),'rows',v_rows));
+end
+$$;
+
+ALTER FUNCTION sysinfo.gethelp(p_token character varying) OWNER TO gm;

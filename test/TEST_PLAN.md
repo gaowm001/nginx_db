@@ -20,7 +20,7 @@ PostgreSQL: gm.check_login(令牌鉴权+权限校验) → 业务函数 → gm.re
    返回 {"errorcode":0/错误码, "message":"...", "info":{...}}
 ```
 
-### 1.2 功能模块与函数分布（共 77 个函数）
+### 1.2 功能模块与函数分布（共 78 个函数）
 
 | 模式 | 数量 | 函数 |
 |---|---|---|
@@ -134,9 +134,12 @@ K1 单人登录互踢：tokentype=1 用户两次登录，旧 token→100006；K2
 ### 场景 L：网页/接口层（test_ngxdb_web.py）
 L1 静态页 200；L2 登录成功/错密码/缺账号/缺密码；L3 全部查询接口带 token→0 且含 total；L4 无 token→100005、伪 token→100012/100005；L5 省市 CRUD 闭环（自清理）；L6 不存在函数行为记录；L7 并发冒烟（10 线程×3 接口全 0，验证 POST finalize 修复后连接复用正常）。
 
+### 场景 M：接口文档（G11，2026-11-13 新增）
+M1 无 token 调 sysinfo/gethelp→100005；M2 伪 token→100012；M3 admin(经根 100 授权)带 token→0 且 total≥100、rows 含 schemaname/funcname/arguments/returntype/description；M4 gm.gethelp 已删除：调用返回 404/函数不存在类错误；M5 前端 #/gethelp 页面加载、模糊搜索（如搜 sysinfo）命中过滤、分页翻页正常。
+
 ---
 
-## 4. 函数覆盖矩阵（77/77）
+## 4. 函数覆盖矩阵（78/78）
 
 | 函数 | 用例 | 函数 | 用例 | 函数 | 用例 |
 |---|---|---|---|---|---|
