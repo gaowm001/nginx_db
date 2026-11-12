@@ -147,6 +147,7 @@ CREATE FUNCTION gm.check_login(p_token character varying, p_actionid integer) RE
 				else 
 				  return gm.returnjson(100006);--登录已失效！ 
 		end case;
+		perform set_config('app.operatorid', v_operatorid::text, false);--等保审计：向审计触发器提供当前操作者
 		select count(*) into v_c from sysinfo.sysaction where coalesce(actionid,sysactionid) = p_actionid and systemid=v_systemid;
 		if v_c=0 then return gm.returnjson(100008);end if; --'无此权限！';--10008
     select '.' || idpath || '.',isdefault into v_code,v_c from sysinfo.sysaction where coalesce(actionid,sysactionid) = p_actionid and systemid=v_systemid limit 1;
@@ -712,15 +713,15 @@ CREATE FUNCTION sysinfo.login(p_loginname character varying, p_pass character va
 			  return gm.returnjson(100001); --帐号密码错误
 			end if;
 		end if;
-		select count(*) into v_c from sysinfo.operinfo where accounts=p_loginname and pass=p_pass and isused=1;
-		if v_c<>1 then 
-		  insert into sysinfo.loginlog values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_pass,p_ip,p_loginname,v_systemid);
+		select count(*) into v_c from sysinfo.operinfo where accounts=p_loginname and pass=crypto.crypt(p_pass,pass) and isused=1;
+		if v_c<>1 then
+		  insert into sysinfo.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_ip,p_loginname,v_systemid);
       return gm.returnjson(100001);--帐号密码错误
 		end if;
-		select operatorid into v_operatorid from sysinfo.operinfo where accounts=p_loginname and pass=p_pass and isused=1;
+		select operatorid into v_operatorid from sysinfo.operinfo where accounts=p_loginname and pass=crypto.crypt(p_pass,pass) and isused=1;
 		select count(*) into v_c from sysinfo.sysoper where operatorid=v_operatorid and systemid=v_systemid;
-		  if v_c=0 then 
-		    insert into sysinfo.loginlog values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_pass,p_ip,p_loginname,v_systemid);
+		  if v_c=0 then
+		    insert into sysinfo.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_ip,p_loginname,v_systemid);
         return gm.returnjson(100001);--帐号密码错误
 			end if;
 		select array_to_json(array_agg(row_to_json(t))) into v_orgjson from (select t1.sysorgid,t1.sysorgname from sysinfo.sysorg t1 left join sysinfo.sysoperorg t2 on t1.sysorgid=t2.sysorgid where t2.operatorid=v_operatorid and t1.systemid=v_systemid ) t;
@@ -3466,7 +3467,6 @@ CREATE TABLE sysinfo.loginlog (
     logid bigint NOT NULL,
     logintime timestamp(6) without time zone,
     operatorno bigint,
-    pass character varying(255),
     ip inet,
     accounts character varying(255),
     systemid smallint
@@ -5176,8 +5176,8 @@ COPY sysinfo.funchtml (htmlid, html1, html2) FROM stdin;
 -- Data for Name: loginlog; Type: TABLE DATA; Schema: sysinfo; Owner: gm
 --
 
-COPY sysinfo.loginlog (logid, logintime, operatorno, pass, ip, accounts, systemid) FROM stdin;
-100	2026-11-09 21:50:30.764683	\N	CHANGE_ME	\N	admin	100
+COPY sysinfo.loginlog (logid, logintime, operatorno, ip, accounts, systemid) FROM stdin;
+100	2026-11-09 21:50:30.764683	\N	\N	admin	100
 \.
 
 
@@ -5194,7 +5194,7 @@ COPY sysinfo.operaccounts (operatorid, accounts, appid, typeid, isused, unionid)
 --
 
 COPY sysinfo.operinfo (operatorid, operatorname, sex, phone, accounts, pass, tokenkey, tokentime, memo, isused, mycode, upcode, headimgurl, nickname, birthday, tokentype, tokeninterval, createoperator, createtime, updateoperator, updatetime, deloperator, deltime) FROM stdin;
-100000	系统管理员	\N	\N	admin	123456	ww0EBwMCvBe6ua6Q7UN20sBqAZterO0e4EKICVYvgiFHGdi+2tX99gTg22IxpLrfYklW1KRg1mlDu4daK28lV3OusNz6isfZWIwjeL54B9N1gI6sw1C3OkKb3P9wSKg3tiA6MbtOxz4/zVWPhYEQNvkD1cEyvDaXeSz/eJS+jRPKIJI3OQ1UjEzcZdmOSTpg++dRhKPN5HP+bpNQk/C0HhPLTVIV/7FAERzUNukdmsrJEdUuQOhC0tVFW7l5j1sP/T7U9a5WB/p0zLjxfPhMvoGJTd5akXywv2JuosFI9zr11pj7J55HtI3j+KLo4b0pQwCcN09NeJSOW3QtDPZtOB4Epg+tpPuxASQs3ihxW744idMvmVi1R/kbWJelKJvkrgJ4w06cpbBkJazsIR0S0okR6W2BYduc24DjtQ==	2026-11-10 00:50:35.152138	\N	1	\N	\N	\N	\N	\N	1	180	\N	\N	\N	\N	\N	\N
+100000	系统管理员	\N	\N	admin	$2a$08$yEUQoAcSFxz6dJW1fK1y6O/02rRrPo0OR9y4I2tgzzwlGMbQU9AiG	ww0EBwMCvBe6ua6Q7UN20sBqAZterO0e4EKICVYvgiFHGdi+2tX99gTg22IxpLrfYklW1KRg1mlDu4daK28lV3OusNz6isfZWIwjeL54B9N1gI6sw1C3OkKb3P9wSKg3tiA6MbtOxz4/zVWPhYEQNvkD1cEyvDaXeSz/eJS+jRPKIJI3OQ1UjEzcZdmOSTpg++dRhKPN5HP+bpNQk/C0HhPLTVIV/7FAERzUNukdmsrJEdUuQOhC0tVFW7l5j1sP/T7U9a5WB/p0zLjxfPhMvoGJTd5akXywv2JuosFI9zr11pj7J55HtI3j+KLo4b0pQwCcN09NeJSOW3QtDPZtOB4Epg+tpPuxASQs3ihxW744idMvmVi1R/kbWJelKJvkrgJ4w06cpbBkJazsIR0S0okR6W2BYduc24DjtQ==	2026-11-10 00:50:35.152138	\N	1	\N	\N	\N	\N	\N	1	180	\N	\N	\N	\N	\N	\N
 \.
 
 
@@ -5724,7 +5724,7 @@ ALTER SCHEMA operator OWNER TO gm;
 -- 逻辑：校验登录态(权限点141) → 校验旧密码 → 更新 sysinfo.operinfo.pass。
 --
 
-CREATE FUNCTION operator.changepassword(p_token character varying, p_oldpass character varying, p_newpass character varying) RETURNS json
+CREATE OR REPLACE FUNCTION operator.changepassword(p_token character varying, p_oldpass character varying, p_newpass character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_check json;v_operatorid int;v_c int;
@@ -5735,11 +5735,15 @@ begin
   if p_oldpass is null or p_newpass is null then
     return gm.returnjson(100010); --密码不能为空
   end if;
-  select count(*) into v_c from sysinfo.operinfo where operatorid=v_operatorid and pass=p_oldpass and isused=1;
+  if length(p_newpass)<8 or p_newpass !~ '[A-Za-z]' or p_newpass !~ '[0-9]'
+     or p_newpass like '%123456%' or p_newpass in ('12345678','password','qwerty123','11111111','88888888','admin123456') then
+    return gm.returnjson(100019); --口令复杂度不足
+  end if;
+  select count(*) into v_c from sysinfo.operinfo where operatorid=v_operatorid and pass=crypto.crypt(p_oldpass,pass) and isused=1;
   if v_c<>1 then
     return gm.returnjson(100001); --旧密码不正确
   end if;
-  update sysinfo.operinfo set pass=p_newpass where operatorid=v_operatorid;
+  update sysinfo.operinfo set pass=p_newpass where operatorid=v_operatorid;--明文由哈希触发器自动转换
   return gm.returnjson(0);
 end
 $$;
@@ -5816,3 +5820,96 @@ end
 $$;
 
 ALTER FUNCTION sysinfo.help_edit(p_token character varying, p_schemaname character varying, p_funcname character varying, p_description text, p_arguments text) OWNER TO postgres;
+
+--
+-- 等级保护 2.0 合规整改（2026-11-13）：
+--   1) 口令存储：operinfo.pass 一律 blowfish 哈希（crypto.crypt），存量明文由触发器
+--      与迁移脚本自动转换；登录/改密用 crypt(输入, 存量哈希) 比对，不再明文比对。
+--   2) 登录日志：loginlog 不再记录口令（pass 列已删除）。
+--   3) 操作审计：核心权限/员工/系统表写入时由触发器自动记入 serverlog
+--      （时间、客户端IP、对象、操作类型、数据快照、操作者）。
+--   4) 新增错误码 100019：口令复杂度不足（≥8 位且含字母和数字，拒绝常见弱口令）。
+--   5) 最小权限：创建专用应用账号 ngxapp 供 nginx postgres 模块连接，
+--      仅授予函数 EXECUTE 权限，不授予业务表直接读写权限。
+--
+
+INSERT INTO sysinfo.errorcode (message, errorcode, primekey, isused, schema)
+SELECT '口令复杂度不足：至少8位且须同时包含字母和数字，禁止常见弱口令', 100019, '100019', 1, 'sysinfo'
+WHERE NOT EXISTS (SELECT 1 FROM sysinfo.errorcode WHERE errorcode=100019);
+
+GRANT USAGE ON SCHEMA crypto TO gm;
+
+CREATE OR REPLACE FUNCTION sysinfo.hash_pass_trigger() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+begin
+  if NEW.pass is not null and NEW.pass<>'' and NEW.pass not like '$2%' then
+    NEW.pass:=crypto.crypt(NEW.pass, crypto.gen_salt('bf',8));
+  end if;
+  return NEW;
+end
+$$;
+
+ALTER FUNCTION sysinfo.hash_pass_trigger() OWNER TO postgres;
+
+DROP TRIGGER IF EXISTS trg_hash_pass ON sysinfo.operinfo;
+CREATE TRIGGER trg_hash_pass BEFORE INSERT OR UPDATE OF pass ON sysinfo.operinfo
+    FOR EACH ROW EXECUTE FUNCTION sysinfo.hash_pass_trigger();
+
+CREATE OR REPLACE FUNCTION gm.audit_trigger() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare v_oper int;v_row text;
+begin
+  v_oper:=nullif(current_setting('app.operatorid', true),'')::int;
+  v_row:=case when TG_OP='DELETE' then row_to_json(OLD)::text else row_to_json(NEW)::text end;
+  begin
+    insert into sysinfo.serverlog(clientip,pckname,funcname,content,logtime,serverip,params,operatorid,res,head)
+    values (inet_client_addr(),'audit',TG_TABLE_NAME||'.'||TG_OP,left(v_row,2000),now(),inet_server_addr(),null,v_oper,'ok',null);
+  exception when others then
+    null;--审计写入失败不阻断业务
+  end;
+  return coalesce(NEW,OLD);
+end
+$$;
+
+ALTER FUNCTION gm.audit_trigger() OWNER TO postgres;
+
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.loginlog;
+CREATE TRIGGER trg_audit AFTER INSERT OR DELETE ON sysinfo.loginlog
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.operinfo;
+CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.operinfo
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.sysaction;
+CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.sysaction
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.roleinfo;
+CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.roleinfo
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.systeminfo;
+CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.systeminfo
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.operpermission;
+CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.operpermission
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+DROP TRIGGER IF EXISTS trg_audit ON sysinfo.rolepermission;
+CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.rolepermission
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ngxapp') THEN
+    CREATE ROLE ngxapp LOGIN PASSWORD 'Ngx#2026$Audit!K9m2';
+  END IF;
+END
+$$;
+
+GRANT USAGE ON SCHEMA sysinfo TO ngxapp;
+GRANT USAGE ON SCHEMA gm TO ngxapp;
+GRANT USAGE ON SCHEMA conn TO ngxapp;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA sysinfo TO ngxapp;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA gm TO ngxapp;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA conn TO ngxapp;
+ALTER DEFAULT PRIVILEGES IN SCHEMA sysinfo GRANT EXECUTE ON FUNCTIONS TO ngxapp;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gm GRANT EXECUTE ON FUNCTIONS TO ngxapp;

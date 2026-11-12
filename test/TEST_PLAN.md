@@ -137,6 +137,9 @@ L1 静态页 200；L2 登录成功/错密码/缺账号/缺密码；L3 全部查�
 ### 场景 M：接口文档（G11，2026-11-13 新增/同日更新）
 M1 无 token 调 sysinfo/help_query→100005；M2 伪 token→100012；M3 admin(经根 100 授权)带 token→0 且 total≥100、rows 含 schemaname/funcname/arguments/returntype/description；M4 gm.gethelp 已删除：调用报函数不存在；M5 前端 #/gethelp 页面加载、模糊搜索（如搜 sysinfo）命中过滤、分页翻页正常；M6 help_edit(权限224)改注释→0 且 help_query 中 description 即时生效；M7 函数不存在→100018；M8 前端“修改注释”弹窗保存后表格即时更新（权限 224 控制）。
 
+### 场景 N：等级保护整改验证（2026-11-13 新增）
+N1 口令哈希迁移后原口令仍可登录（admin/123456→0）且 operinfo.pass 全部为 $2a$ 哈希、无明文；N2 loginlog 不再记录口令（无 pass 列）；N3 口令复杂度不足（如 123456、7 位短口令）改密→100019，合规口令→0 且新口令可登录；N4 登录/员工/权限表变更后 serverlog 出现 audit 记录（含对象.操作、时间、操作者）；N5 token 过期→100006、越权权限点→100008（回归）；N6 https 登录成功、http 301 跳转 https；N7 超过限流阈值的请求被 nginx 拒绝；N8 ngxapp 直查 sysinfo.operinfo 表→permission denied（仅能经函数访问）；N9 backup.sh 执行后 /opt/ngxdb-backup 生成 dump 文件且 pg_restore 可列出目录；N10 全新库导入 dump 后 ngxapp 角色、审计触发器、错误码 100019 存在。
+
 ---
 
 ## 4. 函数覆盖矩阵（79/79）

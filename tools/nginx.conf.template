@@ -1,0 +1,60 @@
+worker_processes  1;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server_tokens off;
+
+    # 等保：接口限流（按来源 IP），防暴力破解与资源耗尽
+    limit_req_zone $binary_remote_addr zone=apilimit:10m rate=50r/s;
+    limit_conn_zone $binary_remote_addr zone=apiconn:10m;
+
+    # HTTP 全部跳转 HTTPS
+    server {
+        listen       80;
+        server_name  localhost;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen       443 ssl;
+        server_name  localhost;
+
+        ssl_certificate      cert/ngxdb.pem;
+        ssl_certificate_key  cert/ngxdb.key;
+        ssl_session_cache    shared:SSL:1m;
+        ssl_session_timeout  5m;
+        ssl_protocols        TLSv1.2 TLSv1.3;
+        ssl_ciphers          HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers  on;
+
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+        location /func {
+            limit_req zone=apilimit burst=100 nodelay;
+            limit_conn apiconn 20;
+            postgresconn "host=127.0.0.1 dbname=postgres user=ngxapp password=__NGXAPP_PASS__ port=5432";
+            rewrite ^/func/(.*)$ /$1 break;
+        }
+
+        location / {
+            root   html;
+            index  index.html index.htm;
+        }
+
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+    }
+}

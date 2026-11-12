@@ -1,0 +1,2 @@
+# NGXDB 每日数据库备份（等保：数据备份）——由 tools/secure_deploy.sh 安装到 /etc/cron.d/
+0 2 * * * root bash __SCRIPT__ >> /var/log/ngxdb-backup.log 2>&1
