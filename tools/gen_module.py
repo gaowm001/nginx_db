@@ -18,12 +18,14 @@
 
 kind 取值：single(单表) / parent_child(父子表) / tree(树形表)
 """
-import argparse, datetime, json, os, re, shutil, subprocess, sys
+import argparse, datetime, json, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SQL_FILE = os.path.join(ROOT, 'extension', 'ngxdb_postgresql.sql')
 HTML_DIR = os.path.join(ROOT, 'html')
-DEPLOY_DIR = '/opt/nginx/html/ngxdb'
+# 部署目录：Linux 默认 /opt/nginx/html/ngxdb；Windows 默认 C:\nginx\html\ngxdb；可用环境变量覆盖
+DEPLOY_DIR = os.environ.get('NGXDB_DEPLOY_DIR') or (
+    '/opt/nginx/html/ngxdb' if os.name != 'nt' else r'C:\nginx\html\ngxdb')
 PG = dict(host='127.0.0.1', user='postgres', password='gao@12345', db='postgres')
 VERBS = {'add': '新增', 'edit': '修改', 'merge': '合并', 'del': '删除', 'undel': '恢复', 'query': '查询'}
 
@@ -460,7 +462,7 @@ def apply_sql(sql, tx):
     env = dict(os.environ, PGPASSWORD=PG['password'])
     if tx:
         sql = 'BEGIN;\n' + sql + '\nROLLBACK;'
-    tmp = '/tmp/gen_module_apply.sql'
+    tmp = os.path.join(tempfile.gettempdir(), 'gen_module_apply.sql')
     open(tmp, 'w', encoding='utf-8').write(sql)
     r = subprocess.run(['psql', '-h', PG['host'], '-U', PG['user'], '-d', PG['db'],
                         '-v', 'ON_ERROR_STOP=1', '-f', tmp], env=env, capture_output=True, text=True)

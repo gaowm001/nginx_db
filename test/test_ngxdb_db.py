@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """ngxdb 数据库层功能测试（第一层）。
-直接调用 SQL 函数验证返回码/数据，覆盖全部 77 个函数。
+直接调用 SQL 函数验证返回码/数据，覆盖全部 81 个函数。
 不依赖第三方库：通过 psql 子进程执行，JSON 聚合解析。
 用法: python3 test_ngxdb_db.py [--db ngxdb_test] [--host 127.0.0.1] [--user postgres] [--password xxx]
 用例编号与 test/TEST_PLAN.md 对应（A1..K3）。
