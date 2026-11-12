@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · NGXDB 权限管理控制台</title>
+<link rel="stylesheet" href="assets/suite.css?v=7">
+<script>
+  (function(){try{var t=localStorage.getItem('theme')||'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+</script>
+</head>
+<body>
+<div class="auth">
+  <button class="icon-btn auth__theme" id="theme" title="切换主题"></button>
+  <div class="auth__card">
+    <div class="auth__hero">
+      <div class="auth__logo" id="logo"></div>
+      <h1>NGXDB<br>权限管理控制台</h1>
+      <p>统一管理系统、部门、角色、员工与权限的现代化管理界面。零依赖、开箱即用，重启后稳定可用。</p>
+      <ul class="auth__features">
+        <li data-f="shield">细粒度权限与动作控制</li>
+        <li data-f="users">员工 / 部门 / 角色管理</li>
+        <li data-f="list">系统日志与错误代码查询</li>
+      </ul>
+    </div>
+    <div class="auth__form">
+      <h2>欢迎回来</h2>
+      <div class="sub">请使用管理员账号登录</div>
+      <div class="alert alert--err" id="alert"></div>
+      <div class="field">
+        <label>用户账号</label>
+        <input class="input" id="login-username" type="text" autocomplete="username" value="admin" placeholder="请输入登录账号">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input class="input" id="login-password" type="password" autocomplete="current-password" placeholder="请输入密码">
+      </div>
+      <button class="btn btn--primary" id="btn-login" style="justify-content:center;padding:11px">登录</button>
+      <div class="auth__hint">NGXDB Admin Suite · 零依赖前端</div>
+    </div>
+  </div>
+</div>
+<script src="assets/core.js?v=7"></script>
+<script>
+(function(){
+  /* 主题 */
+  var THEME=Store.get('theme')||'light';
+  var tb=$('#theme');
+  function paintTheme(){document.documentElement.setAttribute('data-theme',THEME);tb.innerHTML=icon(THEME==='dark'?'sun':'moon',18);}
+  paintTheme();
+  tb.addEventListener('click',function(){THEME=THEME==='dark'?'light':'dark';Store.set('theme',THEME);paintTheme();});
+  /* 左侧图标 */
+  $('#logo').innerHTML=icon('shield',26);
+  $$('[data-f]').forEach(function(el){el.innerHTML=icon(el.getAttribute('data-f'),17)+'<span>'+el.textContent+'</span>';});
+
+  var form=$('#login-password');
+  form.addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});
+  var uname=$('#login-username');
+  uname.addEventListener('keydown',function(e){if(e.key==='Enter')form.focus();});
+  $('#btn-login').addEventListener('click',doLogin);
+
+  function showAlert(msg){var a=$('#alert');a.textContent=msg||'登录失败';a.classList.add('show');}
+  function hideAlert(){var a=$('#alert');a.classList.remove('show');}
+
+  function doLogin(){
+    var u=uname.value.trim(),p=form.value;
+    hideAlert();
+    if(!u){showAlert('请输入登录账号');uname.focus();return;}
+    if(!p){showAlert('请输入密码');form.focus();return;}
+    var b=$('#btn-login');b.disabled=true;b.innerHTML=icon('refresh',16)+'登录中…';
+    /* ✅ nginx postgres 模块“请求体未读全就处理”的缺陷已在 C 层修复
+       （见 rebuild_nginx.sh / ngx_http_postgres_module.c），恢复使用 POST：
+       口令不再出现在 URL / access.log。并保留鉴权抖动退避重试。 */
+    var attempt=0,MAX=3;
+    function done(){b.disabled=false;b.innerHTML='登录';}
+    function tryLogin(){
+      fetch(API_BASE+'sysinfo/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:toFormData({loginname:u,pass:p,system:SYS.systemid})})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j.errorcode===0){
+          var info=j.info||{};
+          Store.set('token',info.token||'');
+          Store.set('actions',(info.actions||[]).join(','));
+          Store.set('operator',JSON.stringify(info.operator||{}));
+          /* 登录成功：若带 redirect（会话失效前所在页面）则原路返回，否则进入首页。
+             仅接受同源绝对路径(以 / 开头且不含 //)，避免开放重定向。 */
+          var rd='';
+          try{ rd=new URLSearchParams(location.search).get('redirect')||''; }catch(e){}
+          if(!rd||rd.charAt(0)!=='/'||rd.indexOf('//')>=0){ rd='index.html'; }
+          location.href=rd;
+          return;
+        }
+        if((j.errorcode===100005||j.errorcode===100011||j.errorcode===100012)&&attempt<MAX){attempt++;setTimeout(tryLogin,300);return;}
+        done();showAlert(j.message||'账号或密码错误');
+      }).catch(function(){
+        if(attempt<MAX){attempt++;setTimeout(tryLogin,300);return;}
+        done();showAlert('无法连接服务器，请稍后重试');
+      });
+    }
+    tryLogin();
+  }
+  uname.focus();
+})();
+</script>
+</body>
+</html>

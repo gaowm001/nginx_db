@@ -11,7 +11,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-pthread_mutex_t oraclemutex = PTHREAD_MUTEX_INITIALIZER;/*³õÊ¼»¯»¥³âËø*/
+pthread_mutex_t oraclemutex = PTHREAD_MUTEX_INITIALIZER;/*ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½*/
 pthread_cond_t  oraclecond = PTHREAD_COND_INITIALIZER;//init cond
 struct s_conn {
 	PGconn *conn;
@@ -686,9 +686,25 @@ static ngx_command_t oracle_commands[] = {
     ngx_null_command
 };
 
+static void oraclemodule_exit(ngx_cycle_t *cycle) {
+    /* Clean up all Oracle global resources on process exit */
+    struct s_conninfo *tmp = con;
+    while (tmp) {
+        if (tmp->poolhp) {
+            OCIHandleAlloc((dvoid *)NULL, (dvoid **) NULL, OCI_HTYPE_POOL, 0, &tmp->poolhp);
+            tmp->poolhp = OCI_PoolDisconnect(tmp->poolhp, tmp->authp, tmp->envhp, (ub4)OCI_DEFAULT);
+            if (tmp->poolhp != NULL) {
+                OCIHandleFree((dvoid *)tmp->poolhp, OCI_HTYPE_POOL);
+            }
+        }
+        free(tmp);
+        tmp = tmp->next;
+    }
+}
+
 static ngx_http_module_t ngx_http_oracle_module_ctx = {
-    NULL,
-    NULL,
+    NULL,                              /* init phase */
+    oraclemodule_exit,                 /* post/init/post/config exit phase */  
     NULL,
     NULL,
     NULL,
@@ -702,7 +718,7 @@ ngx_module_t ngx_http_oracle_module = {
   &ngx_http_oracle_module_ctx,
   oracle_commands,
   NGX_HTTP_MODULE,
-  NULL, init_func ,NULL,  NULL, NULL, NULL, NULL,
+  NULL, init_func ,NULL,  oraclemodule_exit, NULL, NULL, NULL,
   NGX_MODULE_V1_PADDING
 };
 
