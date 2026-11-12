@@ -641,7 +641,7 @@ JSON 组装。对中后台管理系统而言，该延迟远低于人的感知阈
 | 3 | 安全审计-操作审计 | serverlog 有表无数据，重要操作无审计 | 新增审计触发器：loginlog/operinfo/sysaction/roleinfo/systeminfo/operpermission/rolepermission 的增删改自动写入 serverlog（时间、客户端IP、对象、操作类型、数据快照、操作者）；check_login 成功后通过会话变量向审计提供操作者 | 实测登录/更新后 serverlog 出现 audit 记录 |
 | 4 | 通信传输保密性 | 仅 HTTP 明文（口令、token 裸奔） | nginx 启用 TLSv1.2/1.3（自签证书，生产换 CA 证书），HTTP 301 跳转 HTTPS；增加 X-Frame-Options/nosniff/Referrer-Policy 头、server_tokens off | 见 tools/secure_deploy.sh 部署后验证 |
 | 5 | 最小权限 | nginx 以 postgres **超级用户**连库，口令明文在 conf | 新建专用账号 `ngxapp`，仅授予函数 EXECUTE（无表读写权限）；密码随机并轮换 | 新库导入后 ngxapp 存在；直查业务表应被拒 |
-| 6 | 身份鉴别-口令复杂度 | 可设 123456 等弱口令 | 改密/设密强制 ≥8 位且含字母+数字，拒绝常见弱口令；新增错误码 100019 | 弱口令返回 100019 |
+| 6 | 身份鉴别-口令复杂度 | 可设 123456 等弱口令 | 改密/设密强制 ≥8 位且含字母+数字，拒绝常见弱口令；新增错误码 100035 | 弱口令返回 100035 |
 | 7 | 数据备份 | 无自动备份 | tools/backup.sh：每日 pg_dump 自定义格式，本地保留 14 份，附恢复命令与异地同步示例；cron 每日 2 点执行 | 脚本试运行生成 dump 文件 |
 | 8 | 边界-资源控制 | 无接口限流 | nginx limit_req（50r/s，burst 100）+ limit_conn，防暴力破解/资源耗尽 | 部署后超频请求被拒 |
 

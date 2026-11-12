@@ -5737,7 +5737,7 @@ begin
   end if;
   if length(p_newpass)<8 or p_newpass !~ '[A-Za-z]' or p_newpass !~ '[0-9]'
      or p_newpass like '%123456%' or p_newpass in ('12345678','password','qwerty123','11111111','88888888','admin123456') then
-    return gm.returnjson(100019); --口令复杂度不足
+    return gm.returnjson(100035); --口令复杂度不足
   end if;
   select count(*) into v_c from sysinfo.operinfo where operatorid=v_operatorid and pass=crypto.crypt(p_oldpass,pass) and isused=1;
   if v_c<>1 then
@@ -5828,14 +5828,14 @@ ALTER FUNCTION sysinfo.help_edit(p_token character varying, p_schemaname charact
 --   2) 登录日志：loginlog 不再记录口令（pass 列已删除）。
 --   3) 操作审计：核心权限/员工/系统表写入时由触发器自动记入 serverlog
 --      （时间、客户端IP、对象、操作类型、数据快照、操作者）。
---   4) 新增错误码 100019：口令复杂度不足（≥8 位且含字母和数字，拒绝常见弱口令）。
+--   4) 新增错误码 100035：口令复杂度不足（≥8 位且含字母和数字，拒绝常见弱口令）。
 --   5) 最小权限：创建专用应用账号 ngxapp 供 nginx postgres 模块连接，
 --      仅授予函数 EXECUTE 权限，不授予业务表直接读写权限。
 --
 
 INSERT INTO sysinfo.errorcode (message, errorcode, primekey, isused, schema)
-SELECT '口令复杂度不足：至少8位且须同时包含字母和数字，禁止常见弱口令', 100019, '100019', 1, 'sysinfo'
-WHERE NOT EXISTS (SELECT 1 FROM sysinfo.errorcode WHERE errorcode=100019);
+SELECT '口令复杂度不足：至少8位且须同时包含字母和数字，禁止常见弱口令', 100035, '100035', 1, 'sysinfo'
+WHERE NOT EXISTS (SELECT 1 FROM sysinfo.errorcode WHERE errorcode=100035);
 
 GRANT USAGE ON SCHEMA crypto TO gm;
 
