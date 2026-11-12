@@ -54,6 +54,33 @@ nginx_db/
 | 本系统管理(9002) | 部门 sysorg / 部门类型 orgtype / 角色 roleinfo / 员工部门 operinfoorg / 员工权限分配 operinfopermission | 当前系统的组织与授权 |
 | 公共数据(9003) | 省 province / 市 city | 公共基础数据 |
 
+### 1.5 本系统优点
+
+1. **架构极简，部署即用**：整套系统只有 nginx + PostgreSQL 两个组件，无 Java/Python/Node
+   应用层、无消息队列等中间件；一键安装脚本从编译到初始化数据一步到位，非常适合
+   私有化、内网环境快速交付。
+2. **数据库即后端，链路短**：HTTP 请求由 nginx postgres 模块直接调起数据库函数，
+   没有应用层的序列化/转发开销；一个函数就是一段完整的业务逻辑，排查问题从接口
+   到 SQL 一路到底。
+3. **权限体系开箱即用**：基于 `sysaction` 权限树 + token 时效的统一鉴权
+   （`gm.check_login`），菜单可见性与操作权限分层控制，支持多系统、多角色授权，
+   admin 经根节点自动全权。
+4. **接口契约统一**：所有接口都是 `POST /func/{schema}/{函数}`，返回统一的
+   `{errorcode, message, info}` 结构；内置**接口文档页**自动展示全部函数的参数、
+   返回值与说明，且注释支持在线编辑，前后端协作成本低。
+5. **前端声明式开发**：`modules.js` 一行 `P()` 声明即可获得完整的增删改查页面
+   （列表、模糊搜索、分页、弹窗表单、删除/恢复、导出、树形“资源管理器”两栏布局），
+   大部分业务页面无需写 JS。
+6. **新模块一键生成**：`tools/gen_module.py` 从一份 JSON 定义自动产出建表 SQL、
+   六个标准函数、权限节点、前端配置乃至 README/TEST_PLAN 更新，覆盖单表、
+   父子表、树形表三类常见形态，并支持事务试跑（`--apply-tx`）后再正式上线。
+7. **可重复部署、可演进**：`extension/ngxdb_postgresql.sql` 是唯一事实来源，权限
+   节点等写入均幂等（`ON CONFLICT DO NOTHING`），新环境按 dump 一步重建；人事、
+   财务、ERP 等新业务按第十二章的模式即可持续叠加，互不干扰。
+8. **安全细节到位**：业务函数统一 `SECURITY DEFINER` + 最小化 OWNER、SQL 全程
+   参数化、错误码体系化（errorcode 表驱动文案）、关键操作留痕于系统日志，
+   鉴权失败/越权访问在后端强制拦截。
+
 ## 二、环境要求
 - 操作系统：Ubuntu 24.04 / Debian 12+（脚本用 apt；其他发行版请自行替换依赖安装命令）
 - 编译依赖：build-essential、libpcre2-dev（或 libpcre3-dev）、zlib1g-dev、libssl-dev、libpq-dev
