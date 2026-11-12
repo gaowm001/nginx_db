@@ -1,0 +1,16 @@
+{
+  "kind": "single",
+  "schema": "sysinfo",
+  "table": "notice",
+  "chinese": "公告通知",
+  "pk": "noticeid",
+  "group": "9001",
+  "icon": "list",
+  "menu_action": 9200,
+  "actions": {"add": 200, "edit": 201, "merge": 202, "del": 203, "undel": 204, "query": 205},
+  "fields": [
+    {"name": "noticetitle", "type": "varchar(255)", "cn": "标题", "required": true},
+    {"name": "noticecontent", "type": "text", "cn": "内容", "wide": true},
+    {"name": "isused", "type": "smallint", "cn": "启用", "flag": true}
+  ]
+}

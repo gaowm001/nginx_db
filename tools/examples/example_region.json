@@ -1,0 +1,15 @@
+{
+  "kind": "tree",
+  "schema": "sysinfo",
+  "table": "region",
+  "chinese": "示例地区",
+  "pk": "regionid",
+  "group": "9001",
+  "icon": "sitemap",
+  "menu_action": 9203,
+  "actions": {"add": 218, "edit": 219, "merge": 220, "del": 221, "undel": 222, "query": 223},
+  "fields": [
+    {"name": "regionname", "type": "varchar(255)", "cn": "名称", "required": true},
+    {"name": "isused", "type": "smallint", "cn": "启用", "flag": true}
+  ]
+}
