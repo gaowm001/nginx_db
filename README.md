@@ -50,7 +50,7 @@ nginx_db/
 ### 1.4 功能模块（前端菜单）
 | 分组 | 模块 | 说明 |
 |---|---|---|
-| 全系统管理(9001) | 权限管理 sysaction / 系统管理 systeminfo / 员工权限 operinfo / 系统日志 serverlog / 功能查询 actions / 出错代码 errorcode / 接口文档 gethelp | 跨系统的权限、系统、员工、日志、接口元数据 |
+| 全系统管理(9001) | 权限管理 sysaction / 系统管理 systeminfo / 员工权限 operinfo / 系统日志 serverlog / 功能查询 actions / 出错代码 errorcode / 接口文档 help_query+help_edit | 跨系统的权限、系统、员工、日志、接口元数据（可在线维护注释） |
 | 本系统管理(9002) | 部门 sysorg / 部门类型 orgtype / 角色 roleinfo / 员工部门 operinfoorg / 员工权限分配 operinfopermission | 当前系统的组织与授权 |
 | 公共数据(9003) | 省 province / 市 city | 公共基础数据 |
 
@@ -98,7 +98,7 @@ make -j"$(nproc)" && sudo make install
 sudo -u postgres psql -c "CREATE ROLE gm   LOGIN PASSWORD 'gmo@12345';"
 sudo -u postgres psql -c "CREATE ROLE conn LOGIN PASSWORD 'gmo@12345';"
 sudo -u postgres createdb -O gm ngxdb
-# 导入（含 schema / 78 函数 / 19 表 / 数据 / admin 账号）
+# 导入（含 schema / 79 函数 / 19 表 / 数据 / admin 账号）
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d ngxdb -f /path/to/nginx_db/extension/ngxdb_postgresql.sql
 # nginx 模块会向 public.serverlog 写调用日志，需建表
 sudo -u postgres psql -d ngxdb -c "CREATE TABLE IF NOT EXISTS public.serverlog(logid bigserial primary key, clientip inet, pckname varchar(255), funcname varchar(255), content text, logtime timestamp, serverip inet, params text, operatorid bigint, res text, head text);"
@@ -158,7 +158,7 @@ curl -s -X POST http://HOST/func/sysinfo/login -d 'loginname=admin&pass=123456&s
 # 查询员工（token 用登录返回的 token）
 curl -s -X POST http://HOST/func/sysinfo/operinfo_query -d "token=<TOKEN>&page=1&rows=20"
 # 接口文档（权限 9113；返回当前库全部函数的元数据）
-curl -s -X POST http://HOST/func/sysinfo/gethelp -d "token=<TOKEN>"
+curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 ```
 
 ### 4.3 权限体系
@@ -305,13 +305,15 @@ sudo systemctl disable --now nginx    # 停用 systemd 版，继续用 /opt/ngin
 - **新实现**：
   - 权限节点 **9113「接口文档」**，挂在权限树根「系统 100」之下（`idpath=100.9113`）。
     admin 因持有根节点 100 的授权自动可用（`gm.check_login` 按 idpath 前缀匹配），其他账号按需授权。
-  - 新增 **`sysinfo.gethelp(p_token)`**：校验登录态与权限 9113 后，返回当前库全部业务函数的
-    元数据 JSON（`schemaname/funcname/arguments/returntype/description`，当前共 115 条）。
-  - 前端「全系统管理」分组新增**接口文档**只读页面（`#/gethelp`）：表格展示 + 模糊搜索
-    （模式/函数名/参数/返回类型/说明全列匹配）+ 分页 + 刷新。
-- **涉及文件**：`extension/ngxdb_postgresql.sql`（删 `gm.gethelp`、增 `sysinfo.gethelp` 与
-  权限节点 9113）、`html/assets/modules.js`（菜单项）、`html/assets/app.js`（renderGetHelp）、
-  `html/index.html`（资源版本 v=9）。
+  - 新增 **`sysinfo.help_query(p_token)`**（原 gethelp 改名）：校验登录态与权限 9113 后，返回当前库全部业务函数的
+    元数据 JSON（`schemaname/funcname/arguments/returntype/description`，当前共 116 条）。
+  - 新增 **`sysinfo.help_edit(p_token,p_schemaname,p_funcname,p_description,p_arguments)`**（权限 224，挂于 9113 之下）：
+    修改指定函数的注释（写 `pg_description`，owner=postgres 以获得系统目录写权限）。
+  - 前端「全系统管理」分组新增**接口文档**页面（`#/gethelp`）：表格展示 + 模糊搜索
+    （模式/函数名/参数/返回类型/说明全列匹配）+ 分页 + 刷新 + **在线修改函数注释**（权限 224）。
+- **涉及文件**：`extension/ngxdb_postgresql.sql`（删 `gm.gethelp`、增 `sysinfo.help_query`/`sysinfo.help_edit` 与
+  权限节点 9113/224）、`html/assets/modules.js`（菜单项）、`html/assets/app.js`（renderGetHelp/openHelpEdit）、
+  `html/index.html`（资源版本 v=10）。
 - **部署注意**：nginx postgres 模块在 **worker 启动时缓存函数清单**，新增接口必须让 nginx
   重新加载后才可访问：
   ```bash

@@ -5747,19 +5747,25 @@ $$;
 ALTER FUNCTION operator.changepassword(p_token character varying, p_oldpass character varying, p_newpass character varying) OWNER TO gm;
 
 --
--- 接口文档（2026-11-13）：
+-- 接口文档（2026-11-13，同日更新）：
 --   1) 权限节点 9113“接口文档”，挂在“系统(100)”之下（idpath=100.9113）；
 --      admin 经根节点 100 的授权自动获得该权限（check_login 按 idpath 前缀匹配）。
---   2) sysinfo.gethelp：返回当前库所有业务函数的元数据(JSON)，替代原
---      gm.gethelp()（返回整页 HTML、依赖 sysinfo.funchtml 模板且无鉴权，已删除）。
---   3) 前端在“全系统管理”分组新增“接口文档”页面渲染该数据。
+--   2) sysinfo.help_query（原 gethelp 改名）：返回当前库所有业务函数的元数据(JSON)，
+--      替代原 gm.gethelp()（返回整页 HTML、依赖 sysinfo.funchtml 模板且无鉴权，已删除）。
+--   3) sysinfo.help_edit（权限 224，挂于 9113 之下）：修改指定函数的注释
+--      （pg_description），前端接口文档页可在线编辑说明。
+--   4) 前端在“全系统管理”分组新增“接口文档”页面渲染该数据。
 --
 
 INSERT INTO sysinfo.sysaction (isused, idpath, idlevel, idcount, upid, params, systemid, sysactionid, sysactionname, actionid, isdefault)
 VALUES (1, '100.9113', 2, 0, 100, NULL, 100, 9113, '接口文档', NULL, NULL)
 ON CONFLICT (sysactionid) DO NOTHING;
 
-CREATE OR REPLACE FUNCTION sysinfo.gethelp(p_token character varying) RETURNS json
+INSERT INTO sysinfo.sysaction (isused, idpath, idlevel, idcount, upid, params, systemid, sysactionid, sysactionname, actionid, isdefault)
+VALUES (1, '100.9113.224', 4, 0, 9113, NULL, 100, 224, '修改接口注释', 224, NULL)
+ON CONFLICT (sysactionid) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION sysinfo.help_query(p_token character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_check json;v_rows json;
@@ -5779,4 +5785,34 @@ begin
 end
 $$;
 
-ALTER FUNCTION sysinfo.gethelp(p_token character varying) OWNER TO gm;
+ALTER FUNCTION sysinfo.help_query(p_token character varying) OWNER TO gm;
+
+CREATE OR REPLACE FUNCTION sysinfo.help_edit(p_token character varying, p_schemaname character varying, p_funcname character varying, p_description text, p_arguments text) RETURNS json
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare v_check json;v_oid bigint;
+begin
+  v_check:=gm.check_login(p_token,224);
+  if v_check->>'errorcode'<>'0' then return v_check; end if;
+  if p_schemaname is null or p_funcname is null then return gm.returnjson(100010); end if;--参数不能为空
+  if p_arguments is not null then
+    select p.oid into v_oid from pg_proc p join pg_namespace n on p.pronamespace=n.oid
+     where n.nspname=p_schemaname and p.proname=p_funcname
+       and pg_get_function_arguments(p.oid)=p_arguments limit 1;
+  end if;
+  if v_oid is null then
+    select min(p.oid) into v_oid from pg_proc p join pg_namespace n on p.pronamespace=n.oid
+     where n.nspname=p_schemaname and p.proname=p_funcname;
+  end if;
+  if v_oid is null then return gm.returnjson(100018); end if;--函数不存在
+  update pg_description set description=coalesce(p_description,'')
+   where classoid='pg_proc'::regclass and objoid=v_oid and objsubid=0;
+  if not found then
+    insert into pg_description(classoid,objoid,objsubid,description)
+    values ('pg_proc'::regclass, v_oid, 0, coalesce(p_description,''));
+  end if;
+  return gm.returnjson(0,json_build_object('id',v_oid));
+end
+$$;
+
+ALTER FUNCTION sysinfo.help_edit(p_token character varying, p_schemaname character varying, p_funcname character varying, p_description text, p_arguments text) OWNER TO postgres;

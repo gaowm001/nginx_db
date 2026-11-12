@@ -148,7 +148,7 @@ function renderModule(m){
   loadList(m);
 }
 
-/* ===== 接口文档：只读展示数据库全部函数元数据（sysinfo.gethelp，权限 9113） ===== */
+/* ===== 接口文档：展示数据库全部函数元数据（sysinfo/help_query，权限 9113；注释编辑走 help_edit 权限 224） ===== */
 function renderGetHelp(m){
   _state.m=m;_state.q='';_state.rows=[];_state.filtered=[];_state.page=1;
   var tt=$('#topbar-title');if(tt)tt.textContent=m.t;
@@ -188,15 +188,22 @@ function renderApiRows(){
   if(_state.page>pages)_state.page=pages;
   var s=(_state.page-1)*ps,pageRows=filtered.slice(s,s+ps);
   var st=$('#stats');if(st)st.innerHTML=statCard('list','函数总数',rows.length)+statCard('code','当前显示',filtered.length);
-  var head='<tr><th>模式</th><th>函数名</th><th>参数</th><th>返回类型</th><th>说明</th></tr>';
+  var canEdit=hasPerm(224);
+  var head='<tr><th>模式</th><th>函数名</th><th>参数</th><th>返回类型</th><th>说明</th>'+(canEdit?'<th style="text-align:right">操作</th>':'')+'</tr>';
   var body=pageRows.length?pageRows.map(function(r){
     return '<tr><td>'+esc(r.schemaname||'')+'</td>'
       +'<td><b>'+esc(r.funcname||'')+'</b></td>'
       +'<td class="nowrap-el" title="'+esc(r.arguments||'')+'">'+esc(r.arguments||'—')+'</td>'
       +'<td>'+esc(r.returntype||'')+'</td>'
-      +'<td class="nowrap-el" title="'+esc(r.description||'')+'">'+esc(r.description||'—')+'</td></tr>';
-  }).join(''):'<tr><td colspan="5"><div class="empty">'+icon('list',34)+'<div>'+(q?'无匹配结果':'暂无数据')+'</div></div></td></tr>';
+      +'<td class="nowrap-el" title="'+esc(r.description||'')+'">'+esc(r.description||'—')+'</td>'
+      +(canEdit?'<td style="text-align:right;white-space:nowrap"><button class="btn btn--sm btn--ghost btn--icon" data-editdesc="1" data-schema="'+esc(r.schemaname||'')+'" data-func="'+esc(r.funcname||'')+'" data-args="'+esc(r.arguments||'')+'" data-desc="'+esc(r.description||'')+'" title="修改注释">'+icon('edit',16)+'</button></td>':'')+'</tr>';
+  }).join(''):'<tr><td colspan="'+(5+(canEdit?1:0))+'"><div class="empty">'+icon('list',34)+'<div>'+(q?'无匹配结果':'暂无数据')+'</div></div></td></tr>';
   $('#tbl').innerHTML='<table class="data"><thead>'+head+'</thead><tbody>'+body+'</tbody></table>';
+  $$('#tbl [data-editdesc]').forEach(function(b){
+    b.addEventListener('click',function(){
+      openHelpEdit(b.getAttribute('data-schema'),b.getAttribute('data-func'),b.getAttribute('data-args'),b.getAttribute('data-desc'));
+    });
+  });
   /* 分页（结构与通用 renderPager 一致，点击回调走 renderApiRows） */
   var p=$('#pager');
   if(p){
@@ -215,6 +222,23 @@ function renderApiRows(){
       });
     });
   }
+}
+
+/* 修改接口函数注释（sysinfo/help_edit，权限 224）：保存到 pg_description */
+function openHelpEdit(schema,func,args,desc){
+  var md=Modal.open({title:'修改接口注释 — '+schema+'.'+func,icon:'edit',
+    body:'<div class="field"><label>说明（同步到函数 COMMENT，接口文档实时显示）</label><textarea class="textarea" id="help-desc" rows="5">'+esc(desc||'')+'</textarea></div>',
+    footer:'<div class="toolbar__spacer"></div><button class="btn" data-c>取消</button><button class="btn btn--primary" data-ok>'+icon('check',16)+'保存</button>'});
+  md.querySelector('[data-c]').addEventListener('click',function(){Modal.close();});
+  md.querySelector('[data-ok]').addEventListener('click',async function(){
+    var d=$('#help-desc',md).value;
+    try{
+      await api('sysinfo/help_edit',{token:TOKEN,schemaname:schema,funcname:func,description:d,arguments:args});
+      toast('注释已保存','ok');Modal.close();
+      if(_state.m&&_state.m.id==='gethelp')loadGetHelp(_state.m);
+    }catch(e){ if(!e.handled)toast(e.message||'保存失败','err'); }
+  });
+  setTimeout(function(){var f=$('#help-desc',md);if(f)f.focus();},60);
 }
 
 function bindToolbar(m){

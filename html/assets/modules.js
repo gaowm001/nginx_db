@@ -75,5 +75,6 @@ P('city','市','9003',9112,'pin','sysinfo/city','cid',
   {add:188,edit:189,merge:190,del:191,undel:192},null);
 
 /* 接口文档 (9001)：只读页(非 CRUD)，route() 特判走 renderGetHelp，
-   数据来自 sysinfo.gethelp（权限节点 9113，挂在“系统 100”之下） */
-P('gethelp','接口文档','9001',9113,'code','sysinfo/gethelp','',[],[],{},null);
+   数据来自 sysinfo/help_query（权限节点 9113，挂在“系统 100”之下）；
+   help_edit（权限 224）支持在线修改函数注释 */
+P('gethelp','接口文档','9001',9113,'code','sysinfo/help_query','',[],[],{edit:224},null,null);
