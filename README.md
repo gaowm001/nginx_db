@@ -50,6 +50,8 @@ nginx_db/
 │   ├── nginx.conf.template     # 安全加固 nginx 配置模板
 │   ├── backup.sh               # 每日 pg_dump 备份（保留 14 份）
 │   └── ngxdb-backup.cron       # 备份 cron 模板
+├── .claude/skills/             # 大模型代码生成 skill（开发规范+模板）
+│   └── ngxdb-development/      # SKILL.md + reference.md
 ├── README.md                  # 本文件
 └── install.sh                 # 一键安装脚本
 ```
@@ -423,6 +425,8 @@ nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。�
 
 在本项目下做一套新业务（人事、财务、ERP、CRM…），本质上是重复四件事：
 **建表 → 写函数 → 配权限 → 声明前端模块**。数据库即后端，不需要另起应用服务。
+本章规范已固化为大模型代码生成 skill：`.claude/skills/ngxdb-development/`
+（SKILL.md + reference.md），供 AI 编码助手在本仓库内自动遵循。
 
 ### 12.1 总体思路与目录规划
 
