@@ -22,7 +22,7 @@ function P(id,title,group,menu,icon,base,pk,cols,fields,ops,dt,tree){MODULES.pus
 /* 全系统管理 (9001) */
 P('sysaction','权限管理','9001',9100,'shield','sysinfo/sysaction','sysactionid',
   [{f:'sysactionid'},{f:'sysactionname'},{f:'systemname'},{f:'params',w:1},{f:'upid'},{f:'upname'},{f:'actionid'},{f:'isused',b:1}],
-  [{f:'sysactionid',n:1},{f:'sysactionname',r:1},{f:'systemid',s:'systeminfo'},{f:'upid'},{f:'actionid',n:1},{f:'params'},{f:'isdefault'},{f:'isused',sw:1}],
+  [{f:'sysactionid',n:1},{f:'sysactionname',r:1},{f:'systemid',s:'systeminfo'},{f:'upid',tp:'sysaction'},{f:'actionid',n:1},{f:'params'},{f:'isdefault'},{f:'isused',sw:1}],
   {add:108,edit:109,merge:110,del:111,undel:112},null,1);
 P('systeminfo','系统管理','9001',9103,'settings','sysinfo/systeminfo','systemid',
   [{f:'systemid'},{f:'systemname'},{f:'loginname'},{f:'prikey'},{f:'algorithm'},{f:'isused',b:1},{f:'createtime',w:1},{f:'updatetime',w:1},{f:'deltime',w:1}],
@@ -45,7 +45,7 @@ P('errorcode','出错代码','9001',180,'alert','sysinfo/errorcode','errorcode',
 /* 本系统管理 (9002) */
 P('sysorg','部门管理','9002',9102,'sitemap','sysinfo/sysorg','sysorgid',
   [{f:'sysorgid'},{f:'sysorgname'},{f:'orgtype'},{f:'orgtypename'},{f:'description',w:1},{f:'upid'},{f:'upname'},{f:'isused',b:1}],
-  [{f:'sysorgid',n:1},{f:'sysorgname',r:1},{f:'orgtype',s:'orgtype'},{f:'description'},{f:'upid'},{f:'isused',sw:1}],
+  [{f:'sysorgid',n:1},{f:'sysorgname',r:1},{f:'orgtype',s:'orgtype'},{f:'description'},{f:'upid',tp:'sysorg'},{f:'isused',sw:1}],
   {add:114,edit:115,merge:116,del:117,undel:118},null,1);
 P('orgtype','部门类型管理','9002',9101,'tag','sysinfo/orgtype','orgtypeid',
   [{f:'orgtypeid'},{f:'orgtypename'},{f:'description',w:1},{f:'isused',b:1}],
@@ -57,7 +57,7 @@ P('roleinfo','角色管理','9002',9105,'tag','sysinfo/roleinfo','roleinfoid',
   {add:132,edit:133,merge:134,del:135,undel:136},'rolepermission');
 P('operinfoorg','员工部门管理','9002',9106,'users','sysinfo/operinfoorg','operatorid',
   [{f:'operatorid'},{f:'operatorname'},{f:'accounts'},{f:'phone'},{f:'sex'},{f:'sysorgname'},{f:'nickname'},{f:'birthday'},{f:'memo',w:1},{f:'isused',b:1}],
-  [{f:'operatorid',n:1},{f:'operatorname',r:1},{f:'accounts',r:1},{f:'phone'},{f:'sex'},{f:'sysorgid',s:'sysorg'},{f:'nickname'},{f:'birthday'},{f:'memo',w:1},{f:'tokeninterval',n:1},{f:'tokentype',n:1},{f:'isused',sw:1}],
+  [{f:'operatorid',n:1},{f:'operatorname',r:1},{f:'accounts',r:1},{f:'phone'},{f:'sex'},{f:'sysorgid',tp:'sysorg'},{f:'nickname'},{f:'birthday'},{f:'memo',w:1},{f:'tokeninterval',n:1},{f:'tokentype',n:1},{f:'isused',sw:1}],
   {add:144,edit:145,merge:146,del:147,undel:148},null);
 P('operinfopermission','员工权限分配','9002',9107,'key','sysinfo/operinfopermission','operatorid',
   [{f:'operatorid'},{f:'operatorname'},{f:'accounts'},{f:'isused',b:1}],

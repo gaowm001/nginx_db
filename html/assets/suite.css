@@ -273,3 +273,31 @@ table.data td.nowrap-el{max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .crumb-item.muted{color:var(--faint)}
 .crumb-sep{color:var(--border-strong)}
 @media (max-width:960px){.explorer{grid-template-columns:1fr}.tpane{max-height:220px}}
+
+/* ===== 工具栏扩展：列选择 / 导出 / 视图切换 / 树选择 / 卡片视图 ===== */
+.tpick{display:flex;gap:8px;align-items:center}
+.tpick .input{flex:1;cursor:pointer;background:var(--surface-2)}
+.tpick .btn{white-space:nowrap}
+.treepick{max-height:56vh;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px;background:var(--surface)}
+.tplist,.tplist ul{list-style:none;margin:0;padding:0}
+.tpnode{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text);font-size:13.5px;user-select:none}
+.tpnode:hover{background:var(--surface-2)}
+.tpnode.on{background:var(--primary-soft);color:var(--primary-600);font-weight:600}
+.tpnode.dis{color:var(--faint);cursor:not-allowed}
+.tpnode.dis em{font-style:normal;font-size:11.5px;margin-left:4px}
+.colpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px}
+.colpick__item{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-size:13.5px}
+.colpick__item:hover{background:var(--surface-2)}
+.colpick__item.dis{color:var(--faint);cursor:not-allowed}
+.colpick__item input{accent-color:var(--primary)}
+.export-opts{display:flex;gap:10px;flex-wrap:wrap}
+.export-note{margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;padding:12px}
+.card-row{border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;cursor:pointer;background:var(--surface);transition:border-color .15s, box-shadow .15s}
+.card-row:hover{border-color:var(--primary)}
+.card-row.selected{border-color:var(--primary);box-shadow:0 0 0 2px var(--ring)}
+.card-row__title{font-weight:700;font-size:13.5px;margin-bottom:6px;color:var(--text)}
+.card-item{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12.5px;border-bottom:1px dashed var(--border)}
+.card-item:last-child{border-bottom:0}
+.card-item span{color:var(--muted)}
+.card-item b{font-weight:600;color:var(--text);text-align:right;word-break:break-all}

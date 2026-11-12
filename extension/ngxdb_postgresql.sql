@@ -5725,3 +5725,39 @@ GRANT INSERT ON TABLE sysinfo.serverlog TO conn;
 
 \unrestrict s5h1yJp7hfkcujfahXrb8hwC5ODsXL5gcxziIyLenTnnUgDjbaby6cHbravD9AK
 
+
+--
+-- Name: operator; Type: SCHEMA; Schema: -; Owner: gm
+--
+
+CREATE SCHEMA operator;
+ALTER SCHEMA operator OWNER TO gm;
+
+--
+-- Name: changepassword(p_token, p_oldpass, p_newpass); Type: FUNCTION; Schema: operator; Owner: gm
+--
+-- 说明：为对齐 bootstrap 版前端的“修改密码”功能(operator/changepassword)补充。
+-- 逻辑：校验登录态(权限点141) → 校验旧密码 → 更新 sysinfo.operinfo.pass。
+--
+
+CREATE FUNCTION operator.changepassword(p_token character varying, p_oldpass character varying, p_newpass character varying) RETURNS json
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare v_check json;v_operatorid int;v_c int;
+begin
+  v_check:=gm.check_login(p_token,141);
+  if v_check->>'errorcode'<>'0' then return v_check; end if;
+  v_operatorid:=(v_check->'info'->>'operatorid')::integer;
+  if p_oldpass is null or p_newpass is null then
+    return gm.returnjson(100010); --密码不能为空
+  end if;
+  select count(*) into v_c from sysinfo.operinfo where operatorid=v_operatorid and pass=p_oldpass and isused=1;
+  if v_c<>1 then
+    return gm.returnjson(100001); --旧密码不正确
+  end if;
+  update sysinfo.operinfo set pass=p_newpass where operatorid=v_operatorid;
+  return gm.returnjson(0);
+end
+$$;
+
+ALTER FUNCTION operator.changepassword(p_token character varying, p_oldpass character varying, p_newpass character varying) OWNER TO gm;

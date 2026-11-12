@@ -66,6 +66,8 @@ function renderTopbar(){
   var o=$('#uc-org');if(o)o.textContent=org;
   var mp=$('#menu-profile');if(mp)mp.innerHTML=icon('user',16)+'<span>当前账号</span>';
   var ml=$('#menu-logout');if(ml)ml.innerHTML=icon('logout',16)+'<span>退出登录</span>';
+  var mpass=$('#menu-pass');
+  if(mpass){if(hasPerm('141')){mpass.innerHTML=icon('lock',16)+'<span>修改密码</span>';}else{mpass.style.display='none';}}
 }
 
 function bindGlobal(){
@@ -77,6 +79,7 @@ function bindGlobal(){
     uc.addEventListener('click',function(e){e.stopPropagation();menu.classList.toggle('open');});
     document.addEventListener('click',function(){menu.classList.remove('open');});}
   var mo=$('#menu-logout');if(mo)mo.addEventListener('click',function(){logout();});
+  var mpb=$('#menu-pass');if(mpb)mpb.addEventListener('click',function(){openPassModal();});
   var bg=$('#burger');if(bg)bg.addEventListener('click',function(){$('#app').classList.toggle('nav-open');});
   var bd=$('#backdrop');if(bd)bd.addEventListener('click',function(){$('#app').classList.remove('nav-open');});
 }
@@ -115,7 +118,7 @@ function route(){
 
 /* ============ 渲染模块 ============ */
 function renderModule(m){
-  _state.m=m;_state.page=1;_state.sel=null;_state.q='';_state.collapsed={};_state.node=null;_state.expanded={};
+  _state.m=m;_state.page=1;_state.sel=null;_state.q='';_state.collapsed={};_state.node=null;_state.expanded={};_state.hiddenCols=[];_state.view='table';_state.filtered=[];
   var tt=$('#topbar-title');if(tt)tt.textContent=m.t;
   var canAdd=m.fields&&m.fields.length&&m.ops.add&&hasPerm(m.ops.add);
   var tb='<div class="toolbar">'
@@ -125,7 +128,10 @@ function renderModule(m){
     +(m.ops.undel&&hasPerm(m.ops.undel)?'<button class="btn" data-tb="undel">'+icon('restore',16)+'恢复</button>':'')
     +(m.dt?'<button class="btn" data-tb="detail">'+icon('eye',16)+'权限</button>':'')
     +'<div class="toolbar__spacer"></div>'
-    +'<div class="search">'+icon('search',16)+'<input class="input" id="search-in" placeholder="搜索…"></div>'
+    +'<button class="btn btn--icon" data-tb="view" title="表格/卡片视图切换">'+icon('list',18)+'</button>'
+    +'<button class="btn btn--icon" data-tb="colsel" title="显示列">'+icon('columns',18)+'</button>'
+    +'<button class="btn btn--icon" data-tb="export" title="导出">'+icon('download',18)+'</button>'
+    +'<div class="search">'+icon('search',16)+'<input class="input" id="search-in" placeholder="模糊搜索…"></div>'
     +'<button class="btn btn--icon" data-tb="refresh" title="刷新">'+icon('refresh',18)+'</button>'
     +'</div>';
   var c=$('#content');
@@ -151,6 +157,9 @@ function bindToolbar(m){
       else if(a==='undel'){var r3=needRow(m);if(r3)doDel(m,r3,'undel');}
       else if(a==='detail'){var r4=needRow(m);if(r4)openDetail(m,r4);}
       else if(a==='refresh')loadList(m);
+      else if(a==='view'){_state.view=(_state.view==='card')?'table':'card';renderTable(m);}
+      else if(a==='colsel')openColPicker(m);
+      else if(a==='export')openExportMenu(m);
     });
   });
   var si=$('#search-in');
@@ -203,10 +212,12 @@ function renderTable(m){
       /* 未选择节点：显示顶级节点 */
       vis=rows.filter(function(r){return treeDepth(r)===0;});
     }
+    _state.filtered=vis;
     renderExplorer(m,vis);
     return;
   }
   var filtered=q?rows.filter(function(r){return m.cols.some(function(c){var v=r[c.f];return v!=null&&String(v).toLowerCase().indexOf(q)>=0;});}):rows;
+  _state.filtered=filtered;
   var ps=_state.ps,pages=Math.max(1,Math.ceil(filtered.length/ps));
   if(_state.page>pages)_state.page=pages;
   var s=(_state.page-1)*ps,pageRows=filtered.slice(s,s+ps);
@@ -309,12 +320,32 @@ function treeDepth(r){
   return 0;
 }
 function renderRows(m,pageRows){
-  var cols=m.cols;
+  var hid=_state.hiddenCols||[];
+  var cols=m.cols.filter(function(c){return hid.indexOf(c.f)<0;});
+  if(!cols.length)cols=m.cols.slice(0,1);
   var hasAct=(m.ops.edit&&hasPerm(m.ops.edit))||(m.ops.del&&hasPerm(m.ops.del))||!!m.dt;
   var head='<tr>'+cols.map(function(c){return '<th>'+esc(cn(c.f))+'</th>';}).join('')+(hasAct?'<th style="text-align:right">操作</th>':'')+'</tr>';
   var body;
   if(!pageRows.length){
     body='<tr><td colspan="'+(cols.length+(hasAct?1:0))+'"><div class="empty">'+icon('list',34)+'<div>暂无数据</div></div></td></tr>';
+  }else if(_state.view==='card'){
+    /* 卡片视图（对应 bootstrap-table 的视图切换） */
+    var cards=pageRows.map(function(r){
+      var items=cols.map(function(c){
+        var v=r[c.f];var txt=(v===null||v===undefined)?'':(c.b?(isOn(v)?'启用':'停用'):String(v));
+        return '<div class="card-item"><span>'+esc(cn(c.f))+'</span><b>'+esc(txt)+'</b></div>';
+      }).join('');
+      return '<div class="card-row" data-pk="'+esc(String(r[m.pk]!=null?r[m.pk]:''))+'"><div class="card-row__title">'+esc(nameOf(m,r))+'</div>'+items+'</div>';
+    }).join('');
+    $('#tbl').innerHTML='<div class="cards">'+(cards||'<div class="empty">暂无数据</div>')+'</div>';
+    $$('#tbl .card-row').forEach(function(cd){
+      cd.addEventListener('click',function(){
+        $$('#tbl .card-row').forEach(function(x){x.classList.remove('selected');});
+        cd.classList.add('selected');
+        _state.sel=findRow(m,cd.getAttribute('data-pk'));
+      });
+    });
+    return;
   }else{
     /* 树状展示（权限管理/部门管理等带 idpath 的模块）：
        后端已按 idpath 排序（父先子后），这里按 idlevel 缩进，
@@ -421,6 +452,12 @@ function openForm(m,row){
       var chk=isAdd?' checked':(isOn(row[f.f])?' checked':'');
       return '<div class="field'+full+'"><label>'+esc(cn(f.f))+'</label><label class="switch"><input type="checkbox" data-f="'+f.f+'"'+chk+'></label></div>';
     }
+    if(f.tp){
+      var tv=row&&row[f.f]!=null?String(row[f.f]):'';
+      return '<div class="field'+full+'"><label>'+esc(cn(f.f))+(f.r?' <span class="req">*</span>':'')+'</label>'
+        +'<div class="tpick"><input class="input" type="text" data-f="'+f.f+'" data-tp="'+f.tp+'" readonly placeholder="点击右侧按钮选择…" value="'+esc(tv)+'">'
+        +'<button type="button" class="btn" data-tpick="'+f.tp+'">'+icon('sitemap',15)+'选择</button></div></div>';
+    }
     if(f.s){
       return '<div class="field'+full+'"><label>'+esc(cn(f.f))+'</label><select class="select" data-f="'+f.f+'" data-src="'+f.s+'"><option value="">加载中…</option></select></div>';
     }
@@ -441,6 +478,17 @@ function openForm(m,row){
       if(row&&row[f.f]!=null)sel.value=String(row[f.f]);
     }).catch(function(){sel.innerHTML='<option value="">-- 加载失败 --</option>';});
   });
+  $$('[data-tpick]',modal).forEach(function(b){
+    b.addEventListener('click',function(){
+      var inp=b.parentElement.querySelector('input[data-tp]');
+      if(!inp)return;
+      openTreePicker(b.getAttribute('data-tpick'),row,function(sel){
+        var mm=byId(b.getAttribute('data-tpick'));
+        inp.dataset.value=sel[mm.pk];
+        inp.value=nameOf(mm,sel);
+      });
+    });
+  });
   modal.querySelector('[data-c]').addEventListener('click',function(){Modal.close();});
   modal.querySelector('[data-ok]').addEventListener('click',function(){submitForm(m,row,modal);});
 }
@@ -458,7 +506,7 @@ async function submitForm(m,row,modal){
     var el=modal.querySelector('[data-f="'+f.f+'"]');if(!el)return;
     if(el.disabled)return;
     if(f.sw){data[f.f]=el.checked?'1':'0';return;}
-    var v=el.value;
+    var v=(el.dataset&&el.dataset.value!=null&&el.dataset.value!=='')?el.dataset.value:el.value;
     if(f.r&&v===''){toast('请填写 '+cn(f.f),'err');ok=false;return;}
     if(v!=='')data[f.f]=v;
   });
@@ -512,4 +560,141 @@ function permList(raw){
     }).join('');
   }
   return '<pre style="white-space:pre-wrap;font-size:12.5px;color:var(--muted);margin:0">'+esc(String(raw))+'</pre>';
+}
+
+/* ============ 修改密码（对应 bootstrap 版 ChangePass，权限 141） ============ */
+function openPassModal(){
+  var m=Modal.open({title:'修改密码',icon:'lock',
+    body:'<div class="form-grid">'
+      +'<div class="field"><label>旧密码</label><input class="input" type="password" id="pass-old" autocomplete="new-password"></div>'
+      +'<div class="field"><label>新密码</label><input class="input" type="password" id="pass-new" autocomplete="new-password"></div>'
+      +'<div class="field"><label>确认新密码</label><input class="input" type="password" id="pass-new2" autocomplete="new-password"></div>'
+      +'</div>',
+    footer:'<div class="toolbar__spacer"></div><button class="btn" data-c>取消</button><button class="btn btn--primary" data-ok>'+icon('check',16)+'保存</button>'});
+  m.querySelector('[data-c]').addEventListener('click',function(){Modal.close();});
+  m.querySelector('[data-ok]').addEventListener('click',async function(){
+    var o=$('#pass-old',m).value,n=$('#pass-new',m).value,n2=$('#pass-new2',m).value;
+    if(!o||!n){toast('请填写旧密码与新密码','warn');return;}
+    if(n!==n2){toast('两次输入的新密码不一致','warn');return;}
+    try{
+      await api('operator/changepassword',{token:TOKEN,oldpass:o,newpass:n});
+      toast('密码修改成功','ok');Modal.close();
+    }catch(e){ if(!e.handled)toast(e.message||'修改失败','err'); }
+  });
+  setTimeout(function(){var f=$('#pass-old',m);if(f)f.focus();},60);
+}
+
+/* ============ 显示列选择（对应 bootstrap-table showColumns） ============ */
+function openColPicker(m){
+  var hid=_state.hiddenCols||[];
+  var items=m.cols.map(function(c,i){
+    var dis=(m.tree&&i===0);
+    var on=hid.indexOf(c.f)<0;
+    return '<label class="colpick__item'+(dis?' dis':'')+'"><input type="checkbox" data-cf="'+c.f+'"'+(on?' checked':'')+(dis?' disabled':'')+'><span>'+esc(cn(c.f))+'</span></label>';
+  }).join('');
+  var md=Modal.open({title:'显示列',icon:'columns',body:'<div class="colpick">'+items+'</div>',
+    footer:'<div class="toolbar__spacer"></div><button class="btn" data-c>取消</button><button class="btn btn--primary" data-ok>'+icon('check',16)+'确定</button>'});
+  md.querySelector('[data-c]').addEventListener('click',function(){Modal.close();});
+  md.querySelector('[data-ok]').addEventListener('click',function(){
+    var sel=$$('.colpick input[data-cf]',md).filter(function(x){return x.checked;}).map(function(x){return x.getAttribute('data-cf');});
+    _state.hiddenCols=m.cols.map(function(c){return c.f;}).filter(function(f){return sel.indexOf(f)<0;});
+    Modal.close();renderTable(m);
+  });
+}
+
+/* ============ 数据导出（对应 bootstrap-table showExport：Excel/Word/CSV） ============ */
+function openExportMenu(m){
+  var n=(_state.filtered||[]).length;
+  var md=Modal.open({title:'导出数据',icon:'download',
+    body:'<div class="export-opts">'
+      +'<button class="btn" data-xls>'+icon('download',16)+'Excel (.xls)</button>'
+      +'<button class="btn" data-doc>'+icon('download',16)+'Word (.doc)</button>'
+      +'<button class="btn" data-csv>'+icon('download',16)+'CSV (.csv)</button>'
+      +'</div><div class="export-note">导出范围为当前筛选结果（'+esc(m.t)+'，共 '+n+' 条），列与"显示列"设置一致。</div>'});
+  var doExp=function(fmt){Modal.close();exportTable(m,fmt);};
+  md.querySelector('[data-xls]').addEventListener('click',function(){doExp('xls');});
+  md.querySelector('[data-doc]').addEventListener('click',function(){doExp('doc');});
+  md.querySelector('[data-csv]').addEventListener('click',function(){doExp('csv');});
+}
+function exportTable(m,fmt){
+  var hid=_state.hiddenCols||[];
+  var cols=m.cols.filter(function(c){return hid.indexOf(c.f)<0;});
+  if(!cols.length)cols=m.cols.slice(0,1);
+  var rows=(_state.filtered&&_state.filtered.length)?_state.filtered:(_state.pageRows||[]);
+  var name=String(m.t).replace(/[\\\/:*?"<>|]/g,'_');
+  function txt(r,c){var v=r[c.f];if(c.b)v=isOn(v)?'启用':'停用';return (v===null||v===undefined)?'':String(v);}
+  if(fmt==='csv'){
+    var lines=[cols.map(function(c){return '"'+cn(c.f).replace(/"/g,'""')+'"';}).join(',')];
+    rows.forEach(function(r){lines.push(cols.map(function(c){return '"'+txt(r,c).replace(/"/g,'""')+'"';}).join(','));});
+    dl(new Blob(['\ufeff'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'}),name+'.csv');
+    toast('已导出 CSV（'+rows.length+' 条）','ok');return;
+  }
+  var thead='<tr>'+cols.map(function(c){return '<th>'+esc(cn(c.f))+'</th>';}).join('')+'</tr>';
+  var tbody=rows.map(function(r){return '<tr>'+cols.map(function(c){return '<td>'+esc(txt(r,c))+'</td>';}).join('')+'</tr>';}).join('');
+  var html='<html><head><meta charset="utf-8"></head><body><table border="1" cellspacing="0">'+thead+tbody+'</table></body></html>';
+  if(fmt==='xls'){dl(new Blob(['\ufeff'+html],{type:'application/vnd.ms-excel;charset=utf-8'}),name+'.xls');}
+  else{dl(new Blob(['\ufeff'+html],{type:'application/vnd.ms-word;charset=utf-8'}),name+'.doc');}
+  toast('已导出 '+fmt.toUpperCase()+'（'+rows.length+' 条）','ok');
+}
+function dl(blob,filename){
+  var a=document.createElement('a');var u=URL.createObjectURL(blob);
+  a.href=u;a.download=filename;document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(u);a.remove();},400);
+}
+
+/* ============ 通用树形选择弹窗（对应 bootstrap 版"选择上级/选择部门"zTree 弹窗） ============ */
+function openTreePicker(srcModId,curRow,onOk){
+  var mm=byId(srcModId);
+  if(!mm){toast('未找到树数据源模块','err');return;}
+  var title=srcModId==='sysorg'?'选择上级部门':(srcModId==='sysaction'?'选择上级权限':('选择'+mm.t));
+  var md=Modal.open({title:title,icon:'sitemap',wide:true,
+    body:'<div class="treepick"><div class="spinner"></div></div>',
+    footer:'<div class="toolbar__spacer"></div><button class="btn" data-c>取消</button><button class="btn btn--primary" data-ok disabled>'+icon('check',16)+'确定</button>'});
+  md.querySelector('[data-c]').addEventListener('click',function(){Modal.close();});
+  api(mm.base+'_query',{token:TOKEN}).then(function(j){
+    var rows=(j.info&&j.info.rows)||[];
+    var children={};
+    rows.forEach(function(r){
+      var p=String(r.idpath||''),key='';
+      if(p){var parts=p.split('.');if(parts.length>1)key=parts.slice(0,parts.length-1).join('.');}
+      (children[key]||(children[key]=[])).push(r);
+    });
+    var selRow=null;
+    function disabledRow(r){
+      if(!curRow)return false;
+      var cp=String(curRow[mm.pk]==null?'':curRow[mm.pk]);
+      var rp=String(r.idpath||'');
+      return rp===''||rp===String(curRow.idpath||'')||(curRow.idpath&&rp.indexOf(String(curRow.idpath)+'.')===0)||String(r[mm.pk])===cp;
+    }
+    function nodeLi(r,depth){
+      var kids=children[String(r.idpath||'')]||[];
+      var dis=disabledRow(r);
+      var h='<li class="tpnode'+(dis?' dis':'')+'" data-ip="'+esc(String(r.idpath||''))+'" style="padding-left:'+(depth*18+8)+'px">'
+        +icon(kids.length?'folder':'tag',14)+'<span>'+esc(nameOf(mm,r))+'</span>'+(dis?'<em>（自身/下级，禁选）</em>':'')+'</li>';
+      kids.forEach(function(k){h+=nodeLi(k,depth+1);});
+      return h;
+    }
+    var html='<ul class="tplist">';
+    (children['']||[]).forEach(function(r){html+=nodeLi(r,0);});
+    html+='</ul>';
+    if(!rows.length){md.querySelector('.treepick').innerHTML='<div class="empty">暂无可选节点</div>';return;}
+    md.querySelector('.treepick').innerHTML=html;
+    var okBtn=md.querySelector('[data-ok]');
+    $$('.tpnode',md).forEach(function(el){
+      el.addEventListener('click',function(){
+        if(el.classList.contains('dis')){toast('不能选择自身或其下级','warn');return;}
+        $$('.tpnode',md).forEach(function(x){x.classList.remove('on');});
+        el.classList.add('on');
+        var ip=el.getAttribute('data-ip');
+        selRow=null;rows.forEach(function(r){if(String(r.idpath||'')===ip)selRow=r;});
+        okBtn.disabled=!selRow;
+      });
+    });
+    okBtn.addEventListener('click',function(){
+      if(!selRow){toast('请先选择一个节点','warn');return;}
+      Modal.close();if(onOk)onOk(selRow);
+    });
+  }).catch(function(e){
+    md.querySelector('.treepick').innerHTML='<div class="empty">'+icon('alert',30)+'<div>加载失败：'+esc(e.message||'')+'</div></div>';
+  });
 }
