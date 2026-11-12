@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """ngxdb 网页/接口层功能测试（第二层）。
-针对运行中的 nginx(默认 http://127.0.0.1)，验证静态页、登录、全部查询接口、
-鉴权失败路径、一次自清理 CRUD 闭环与并发冒烟。用例编号见 test/TEST_PLAN.md 场景 L。
-用法: python3 test_ngxdb_web.py [--base http://127.0.0.1]
+针对运行中的 nginx(默认 https://127.0.0.1，自签证书已忽略校验)，验证静态页、
+登录、全部查询接口、鉴权失败路径、一次自清理 CRUD 闭环与并发冒烟。
+用例编号见 test/TEST_PLAN.md 场景 L。
+用法: python3 test_ngxdb_web.py [--base https://127.0.0.1]
+（nginx 已启用 HTTPS 并将 HTTP 301 跳转 HTTPS，故默认走 https；如需测试纯 HTTP
+环境请显式传 --base http://...，且该环境不得强制跳转。）
 """
 import json, os, sys, threading, time
 import socket
+import ssl
 import urllib.parse, urllib.request
+
+# 等保整改后默认启用 TLS（自签证书），测试端忽略证书校验
+ssl._create_default_https_context = ssl._create_unverified_context
 
 def detect_local_ip():
     """探测本机非环回 IPv4；失败则退回 127.0.0.1。
@@ -25,7 +32,7 @@ def detect_local_ip():
         pass
     return '127.0.0.1'
 
-BASE = 'http://' + detect_local_ip()
+BASE = 'https://' + detect_local_ip()
 RESULTS = []
 
 def argparse():
@@ -64,7 +71,7 @@ def http(path, data=None, method=None, timeout=15, retries=3):
     return last
 
 def api(func, data):
-    st, body = http('/func/' + func, data)
+    st, body = http('/func/' + func.replace('.', '/'), data)
     try:
         return st, json.loads(body)
     except Exception:
@@ -150,7 +157,7 @@ def t_crud(tok):
     rec('L5g province_del→0', r.get('errorcode') == 0, str(r)[:120])
     # 物理清理测试数据，保持在用库干净
     import subprocess
-    env = dict(os.environ, PGPASSWORD=os.environ.get('PGPASSWORD', ''))
+    env = dict(os.environ, PGPASSWORD=os.environ.get('PGPASSWORD', 'gao@12345'))
     subprocess.run(['psql', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres', '-c',
                     'DELETE FROM sysinfo.city WHERE city LIKE %s; DELETE FROM sysinfo.province WHERE province LIKE %s' % ("'测试%W%'", "'测试%W%'")],
                    env=env, capture_output=True, timeout=15)

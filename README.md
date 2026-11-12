@@ -25,7 +25,7 @@ nginx
 要点：
 - **前端零依赖**：`html/assets/{core.js,app.js,modules.js,suite.css}`，无框架、无构建，复制到 nginx 的 html 目录即可用。
 - **无应用层**：所有接口都是 PostgreSQL 函数；nginx 模块负责"把 URL 变成函数调用"。
-- **API 约定**：`POST /func/<schema>.<func>[_<op>]`（`application/x-www-form-urlencoded`）。存储过程参数名以 `p_` 开头，模块会自动去掉前缀再与请求参数匹配（例如函数 `sysinfo.login(p_loginname, p_pass, p_ip, p_system)` 对应请求参数 `loginname/pass/ip/system`）。
+- **API 约定**：`POST /func/<schema>/<func>[_<op>]`（**斜杠分隔**，`application/x-www-form-urlencoded`）。存储过程参数名以 `p_` 开头，模块会自动去掉前缀再与请求参数匹配（例如函数 `sysinfo.login(p_loginname, p_pass, p_ip, p_system)` 对应请求参数 `loginname/pass/ip/system`）。注意：请勿使用 `schema.func` 点号形式——模块对无法解析的函数名会直接关闭连接（不返回 404 JSON）。
 - **登录鉴权**：`/func/sysinfo/login` 返回 AES 加密的 `token` 与可用 `actions` 列表；后续请求携带 `token`，由 `gm.check_login` 校验。
 
 ### 1.3 目录结构
@@ -150,7 +150,7 @@ server {
         try_files $uri $uri/ =404;
     }
 
-    # NGXDB API：把 /func/<schema>.<func> 交给 postgres 模块执行
+    # NGXDB API：把 /func/<schema>/<func> 交给 postgres 模块执行
     location /func/ {
         rewrite ^/func/(.*)$ /$1 break;
         postgresconn "host=127.0.0.1 port=5432 dbname=ngxdb user=gm password='gmo@12345'";
