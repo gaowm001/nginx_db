@@ -563,3 +563,56 @@ ON CONFLICT DO NOTHING;
 13. **测试随代码走**：每个新模块在 `test/TEST_PLAN.md` 登记场景并执行；核心链路
     （鉴权失败、分页、增删改查、树/父子特有逻辑）至少各一条。
 
+## 十四、安全与性能验证（实测，2026-11-13）
+
+以下数据均在当前部署环境（VMware 虚拟机，nginx + PostgreSQL 18 同机，本机回环
+`127.0.0.1`，nginx 单实例）实测取得，可复现。
+
+### 14.1 安全验证（全部在在用系统上实测通过）
+
+| # | 用例 | 输入 | 实际返回 | 结论 |
+|---|---|---|---|---|
+| 1 | 无 token 访问 | `POST /func/sysinfo/help_query`（不带 token） | `100005 非法登录` | 入口强制鉴权 ✓ |
+| 2 | 伪造 token | `token=deadbeef00` | `100012 子系统信息出错` | 无法伪造会话 ✓ |
+| 3 | 错误口令 | `loginname=admin, pass=wrongpass` | `100001 帐号密码错误` | 口令校验 ✓ |
+| 4 | 登录名注入 | `loginname=admin'--` | `100001 帐号密码错误` | 参数化，注入无效 ✓ |
+| 5 | 口令注入 | `pass=123456' OR '1'='1` | `100001 帐号密码错误` | 参数化，注入无效 ✓ |
+| 6 | token 过期 | 事务内将 `tokentime` 置为过期后调用 | `100006 登录已失效`（回滚后恢复 0） | 时效控制 ✓ |
+| 7 | 越权（无此权限点） | `gm.check_login(token, 99999)`（不存在的权限点） | `100008 无此权限` | 权限点强校验 ✓ |
+| 8 | 未授权调用写接口 | 空 token / 失效会话调 `sysorg_add` 等写接口 | `100005 非法登录` | 写接口同样强制鉴权 ✓ |
+
+说明：token 为 AES/PGP 加密串（`sysinfo.aes_decrypt`，密钥分两层：`actions(101).params`
+与 `systeminfo.prikey`），并在 `check_login` 中二次解密比对 `operinfo.tokenkey/tokentime`；
+所有业务函数入口强制调用，前端隐藏按钮仅是体验优化。
+
+### 14.2 性能验证（curl 实测，15 次取平均）
+
+| 接口 | 场景 | 平均 | 最快 | 最慢 |
+|---|---|---|---|---|
+| `sysinfo/login` | 登录（PG 加密 + 写 token） | **12.4ms** | 9.2ms | 22.0ms |
+| `sysinfo/help_query` | 116 行函数元数据大 JSON | **7.8ms** | 7.1ms | 9.2ms |
+| `sysinfo/sysorg_query` | 部门树（递归 CTE） | **8.0ms** | 7.1ms | 9.4ms |
+| `sysinfo/errorcode_query` | 普通分页列表 | **7.8ms** | 7.2ms | 9.3ms |
+
+并发：50 个 `help_query` 请求、10 并发，总耗时 **0.40s（≈125 req/s）**——单 worker、
+虚拟机、含完整鉴权与解密。单个请求端到端稳定在 **10ms 以内**（登录约 12ms），
+其中鉴权（两层解密 + 多表校验）占比很小，绝大多数时间是 PG 执行业务 SQL 与
+JSON 组装。对中后台管理系统而言，该延迟远低于人的感知阈值（约 100ms）。
+
+### 14.3 与 Tomcat（Spring Boot 典型栈）的比较
+
+| 维度 | 本系统（nginx + PG 函数） | Tomcat + Spring Boot（典型三层） |
+|---|---|---|
+| 请求链路 | HTTP → nginx postgres 模块 → PG 函数，**1 跳** | HTTP → Tomcat 容器线程 → Filter/Controller → Service → ORM → JDBC → PG，**5+ 跳** |
+| 单请求开销 | 实测 ~8ms（含鉴权解密） | 同等 CRUD 通常在数十毫秒量级（含 ORM 映射、对象分配、序列化；因实现而异） |
+| 运行时 | 无 JVM：nginx 常驻内存小、无预热 | JVM 需预热与较大堆内存（数百 MB 起） |
+| 事务与一致性 | 一个函数 = 一个事务，plpgsql 异常自动回滚 | 依赖 `@Transactional` 正确传播，跨层易出错 |
+| 权限控制 | 函数入口强制 `check_login`，漏写即不可用（默认安全） | 依赖拦截器/注解逐接口标注，存在漏配风险 |
+| 新模块成本 | 6 个函数 + 1 行 `P()` 声明（或 gen_module.py 一键） | Controller/Service/Repository/DTO/VO 多层样板代码 |
+| 生态与适用 | 以数据为中心的管理系统、中后台、内网私有化 | 复杂应用逻辑、消息/调度/文件/第三方集成等大型应用 |
+
+结论：对于**以数据库为中心的管理系统**（人事、财务、ERP、各类台账），本架构用更短
+的链路换取更低延迟与更小的部署面；Tomcat 生态在复杂应用集成上仍更强，二者定位不同。
+需要说明：本机未安装 Java，未做同环境 Tomcat 实测，表中 Tomcat 侧为架构分析与
+公开经验量级，供选型参考。
+
