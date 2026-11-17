@@ -1,0 +1,23 @@
+{
+  "kind": "parent_child",
+  "schema": "sysinfo",
+  "table": "task",
+  "chinese": "任务",
+  "pk": "taskid",
+  "group": "9001",
+  "icon": "list",
+  "menu_action": 9201,
+  "actions": {"add": 206, "edit": 207, "merge": 208, "del": 209, "undel": 210, "query": 211},
+  "fields": [
+    {"name": "taskname", "type": "varchar(255)", "cn": "任务名", "required": true},
+    {"name": "ismine", "type": "smallint", "cn": "启用", "flag": true}
+  ],
+  "child_table": "subtask",
+  "child_pk": "subtaskid",
+  "child_fk": "upid",
+  "child_chinese": "子任务",
+  "child_fields": [
+    {"name": "subtaskname", "type": "varchar(255)", "cn": "子任务名", "required": true},
+    {"name": "ismine", "type": "smallint", "cn": "启用", "flag": true}
+  ]
+}

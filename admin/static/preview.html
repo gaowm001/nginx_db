@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>模块页面预览</title>
+<style>
+body{margin:0;font:14px/1.6 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:#f3f6fb;color:#1f2937}
+.wrap{padding:14px 18px}
+.bar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.bar h2{font-size:16px;margin:0}
+.tag{font-size:11px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:2px 10px}
+.bar input{border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;width:220px}
+.bar button{border:none;border-radius:6px;padding:8px 14px;cursor:pointer;background:#2563eb;color:#fff}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden}
+th{background:#f9fafb;text-align:left;padding:9px 12px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#4b5563}
+td{padding:8px 12px;border-bottom:1px solid #f3f4f6;font-size:13px}
+tr:hover td{background:#f0f6ff}
+.foot{margin-top:10px;color:#6b7280;font-size:12px}
+dialog{border:none;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.25);padding:18px 20px;width:420px}
+dialog h3{margin:0 0 12px;font-size:15px}
+dialog label{display:block;font-size:12px;color:#6b7280;margin:8px 0 3px}
+dialog input{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:7px 9px;box-sizing:border-box}
+.ops{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.ops button{border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;padding:7px 14px;cursor:pointer}
+.ops button.pri{background:#2563eb;border-color:#2563eb;color:#fff}
+.empty{padding:30px;text-align:center;color:#9ca3af}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <h2 id="title">加载中…</h2><span class="tag">预览模式（页面结构模拟，发布后接入真实鉴权）</span>
+    <div style="flex:1"></div>
+    <input id="kw" placeholder="模糊搜索（首个文本字段）">
+    <button onclick="openAdd()">＋ 新增</button>
+  </div>
+  <table><thead id="head"></thead><tbody id="body"></tbody></table>
+  <div class="foot" id="foot"></div>
+</div>
+<dialog id="dlg"><h3 id="dlg-t"></h3><div id="frm"></div>
+  <div class="ops"><button onclick="dlg.close()">取消</button><button class="pri" onclick="save()">保存</button></div>
+</dialog>
+<script>
+const qs = new URLSearchParams(location.search);
+const API = (location.port === '8765') ? '' : 'http://127.0.0.1:8765';
+let CFG = null, ROWS = [];
+(async () => {
+  CFG = await (await fetch(API + '/api/preview/config?table=' + qs.get('table'))).json();
+  document.title = '预览：' + CFG.chinese;
+  document.getElementById('title').textContent = CFG.chinese + '（' + CFG.schema + '.' + CFG.table + '）';
+  await load();
+})();
+async function load() {
+  const d = await (await fetch(API + '/api/preview/data?schema=' + CFG.schema + '&table=' + CFG.table +
+    '&pk=' + CFG.pk + '&limit=20')).json();
+  ROWS = d.rows;
+  render();
+}
+function cols() {
+  const cs = [{f: CFG.pk}].concat(CFG.fields.map(f => ({f: f.name, cn: f.cn, flag: f.flag})));
+  if (!cs.some(c => c.f === 'isused')) cs.push({f: 'isused', cn: '启用', flag: 1});
+  return cs;
+}
+function render() {
+  const cs = cols();
+  document.getElementById('head').innerHTML = '<tr>' + cs.map(c => '<th>' + esc(c.cn || c.f) + '</th>').join('') + '<th>操作</th></tr>';
+  const kw = document.getElementById('kw').value.trim();
+  const rows = ROWS.filter(r => !kw || cs.some(c => String(r[c.f] == null ? '' : r[c.f]).includes(kw)));
+  document.getElementById('body').innerHTML = rows.map(r => '<tr>' +
+    cs.map(c => '<td>' + esc(c.flag ? (r[c.f] ? '启用' : '停用') : (r[c.f] == null ? '' : r[c.f])) + '</td>').join('') +
+    '<td><a href="javascript:void(0)" onclick="openEdit(' + r[CFG.pk] + ')">编辑</a> ' +
+    '<a href="javascript:void(0)" onclick="toggle(' + r[CFG.pk] + ')">' + (r.isused ? '停用' : '恢复') + '</a></td></tr>').join('') ||
+    '<tr><td colspan="' + (cs.length + 1) + '" class="empty">表中暂无数据（预览仅展示前 20 行）</td></tr>';
+  document.getElementById('foot').textContent = '共 ' + rows.length + ' 行（模拟分页）· 主键 ' + CFG.pk;
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&','<':'<','>':'>','"':'"'}[c])); }
+function openAdd() {
+  document.getElementById('dlg-t').textContent = '新增' + CFG.chinese;
+  document.getElementById('frm').innerHTML = CFG.fields.filter(f => !f.flag).map(f =>
+    '<label>' + esc(f.cn || f.name) + '</label><input id="f_' + f.name + '">').join('');
+  document.getElementById('dlg').showModal();
+}
+function openEdit(id) {
+  const r = ROWS.find(x => x[CFG.pk] === id);
+  document.getElementById('dlg-t').textContent = '修改' + CFG.chinese + '（' + id + '）';
+  document.getElementById('frm').innerHTML = CFG.fields.filter(f => !f.flag).map(f =>
+    '<label>' + esc(f.cn || f.name) + '</label><input id="f_' + f.name + '" value="' + esc(r[f.name] == null ? '' : r[f.name]) + '">').join('');
+  document.getElementById('dlg').showModal();
+}
+function save() { alert('预览模式：保存将通过发布后的 ' + CFG.schema + '.' + CFG.table + '_add/_edit 接口在 ngxdb 中生效。'); document.getElementById('dlg').close(); }
+async function toggle(id) { alert('预览模式：停用/恢复将通过 ' + CFG.schema + '.' + CFG.table + '_del/_undel 在 ngxdb 中生效。'); }
+document.getElementById('kw').oninput = render;
+</script>
+</body>
+</html>

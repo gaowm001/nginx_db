@@ -15,19 +15,20 @@ if [ ! -f "$CONF/cert/ngxdb.pem" ]; then
 fi
 chmod 600 "$CONF/cert/ngxdb.key"
 
-echo "[2/5] 轮换专用应用账号 ngxapp 口令..."
+echo "[2/5] 轮换连接账号 conn 口令..."
 NEWPASS=$(openssl rand -hex 16)
-su -s /bin/bash postgres -c "psql -d postgres -tA -c \"ALTER ROLE ngxapp PASSWORD '$NEWPASS'\"" >/dev/null
+su -s /bin/bash postgres -c "psql -d postgres -tA -c \"ALTER ROLE conn PASSWORD '$NEWPASS'\"" >/dev/null
 
 echo "[3/5] 安装安全加固 nginx.conf..."
 TS=$(date +%Y%m%d_%H%M%S)
 [ -f "$CONF/nginx.conf" ] && cp -f "$CONF/nginx.conf" "$CONF/nginx.conf.bak-$TS"
-sed "s/__NGXAPP_PASS__/$NEWPASS/" "$SRC_DIR/nginx.conf.template" > "$CONF/nginx.conf"
+RELOAD_TOKEN=$(openssl rand -hex 16)
+sed -e "s/__CONN_PASS__/$NEWPASS/" -e "s/__RELOAD_TOKEN__/$RELOAD_TOKEN/" "$SRC_DIR/nginx.conf.template" > "$CONF/nginx.conf"
 chmod 600 "$CONF/nginx.conf"
 
 echo "[4/5] 校验并重启 nginx..."
 if "$CONF/../sbin/nginx" -t 2>/dev/null || /opt/nginx/sbin/nginx -t; then
-  systemctl restart nginx || { pkill -x nginx; rm -f /opt/nginx/logs/nginx.pid; /opt/nginx/sbin/nginx; }
+  systemctl restart nginx || { echo "[ERROR] systemctl restart nginx 失败，排查：journalctl -u nginx --no-pager | tail -20"; exit 1; }
 else
   echo "nginx -t 校验失败，回滚旧配置"; cp -f "$CONF/nginx.conf.bak-$TS" "$CONF/nginx.conf"; exit 1
 fi

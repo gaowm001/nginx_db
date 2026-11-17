@@ -18,7 +18,7 @@ nginx
                         ▼
                    PostgreSQL 18
                      · schema：sysinfo / gm / conn / crypto
-                     · 19 张表、81 个函数（登录、鉴权、CRUD、AES 令牌、审计触发器等）
+                     · 19 张表、82 个函数（业务 70 + 内部 12：登录、鉴权、CRUD、AES 令牌、审计触发器等）
                      · 扩展：plpython3u、pgcrypto
 ```
 
@@ -84,7 +84,7 @@ nginx_db/
    六个标准函数、权限节点、前端配置乃至 README/TEST_PLAN 更新，覆盖单表、
    父子表、树形表三类常见形态，并支持事务试跑（`--apply-tx`）后再正式上线。
 7. **可重复部署、可演进**：`extension/ngxdb_postgresql.sql` 是唯一事实来源，权限
-   节点等写入均幂等（`ON CONFLICT DO NOTHING`），新环境按 dump 一步重建；人事、
+   节点等写入均幂等（`ON CONFLICT (sysactionid) DO UPDATE`，重复发布自愈迁移），新环境按 dump 一步重建；人事、
    财务、ERP 等新业务按第十二章的模式即可持续叠加，互不干扰。
 8. **安全细节到位**：业务函数统一 `SECURITY DEFINER` + 最小化 OWNER、SQL 全程
    参数化、错误码体系化（errorcode 表驱动文案）、关键操作留痕于系统日志，
@@ -130,11 +130,11 @@ make -j"$(nproc)" && sudo make install
 
 **（3）初始化数据库**
 ```bash
-# SQL 中大量 OWNER TO gm / conn，两个角色必须先存在
-sudo -u postgres psql -c "CREATE ROLE gm   LOGIN PASSWORD 'gmo@12345';"
-sudo -u postgres psql -c "CREATE ROLE conn LOGIN PASSWORD 'gmo@12345';"
+# SQL 中大量 OWNER TO gm / conn，两个角色必须先存在（口令请替换为强口令）
+sudo -u postgres psql -c "CREATE ROLE gm   LOGIN PASSWORD '<数据库强口令>';"
+sudo -u postgres psql -c "CREATE ROLE conn LOGIN PASSWORD '<数据库强口令>';"
 sudo -u postgres createdb -O gm ngxdb
-# 导入（含 schema / 81 函数 / 19 表 / 数据 / admin 账号）
+# 导入（含 schema / 82 函数 / 20 表 / 数据 / admin 账号）
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d ngxdb -f /path/to/nginx_db/extension/ngxdb_postgresql.sql
 # nginx 模块会向 public.serverlog 写调用日志，需建表
 sudo -u postgres psql -d ngxdb -c "CREATE TABLE IF NOT EXISTS public.serverlog(logid bigserial primary key, clientip inet, pckname varchar(255), funcname varchar(255), content text, logtime timestamp, serverip inet, params text, operatorid bigint, res text, head text);"
@@ -155,7 +155,7 @@ server {
     # NGXDB API：把 /func/<schema>/<func> 交给 postgres 模块执行
     location /func/ {
         rewrite ^/func/(.*)$ /$1 break;
-        postgresconn "host=127.0.0.1 port=5432 dbname=ngxdb user=gm password='gmo@12345'";
+        postgresconn "host=127.0.0.1 port=5432 dbname=ngxdb user=gm password='<数据库强口令>'";
     }
 }
 ```
@@ -206,7 +206,8 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 1. **默认口令**：`admin/123456` 为演示口令，生产环境请立即修改（表 `sysinfo.operinfo`）。
 2. **函数即接口**：nginx 模块会把所连库中非排除 schema 的函数都暴露为 URL。请置于内网 / 加反向代理鉴权 / 限制来源 IP，勿直接暴露公网。
 3. **口令存放**：`nginx.conf` 的 `postgresconn` 内含数据库口令，注意文件权限（`chmod 600 /opt/nginx/conf/nginx.conf`）。
-4. 数据库口令建议不要沿用默认值 `gmo@12345`。
+4. 数据库口令请勿使用任何示例占位值，务必设置为强口令（一键安装时由脚本随机生成）。
+5. **子系统密钥（`systeminfo.prikey`）**：是签发/校验该子系统登录 token 的 AES 密钥（算法见 `systeminfo.algorithm`：1=AES-128，2=AES-256），泄露可伪造该系统登录态；修改后该系统全部在线 token 立即失效（用户需重新登录）。详见「十四、安全与性能验证」。
 
 ## 六、常见问题（FAQ）
 - **登录 404 / 502**：确认 nginx 已 `--add-module=.../postgres`（`nginx -V`）；确认 nginx.conf 有 `/func/` location 且含 `rewrite ... break;`。
@@ -224,7 +225,7 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 | nginx 安装目录 | `/opt/nginx` |
 | 监听端口 | `80` |
 | 数据库名 | `ngxdb` |
-| 数据库角色 | `gm` / `conn`（默认密码 `gmo@12345`） |
+| 数据库角色 | `gm` / `conn`（口令由安装脚本随机生成，或用环境变量 `PG_APP_PASSWORD` 指定） |
 | 超级用户 | `postgres` |
 | nginx 可执行文件 | `/opt/nginx/sbin/nginx` |
 | 日志 | `/opt/nginx/logs/{access.log,error.log}` |
@@ -314,6 +315,9 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 
 修复后回归：**数据库层测试 141 通过 / 0 失败 / 4 已知问题**（已知问题为 dump 缺少 pkg_service、sms 模式及 funchtml 空表，见 `test/TEST_PLAN.md` 第 5 节）。
 
+**2026-11-14 追加修复**：`operinfopermission_query` 分页分支引用不存在的别名 `toper` 导致接口报错，已修复；
+员工/角色权限子表保存由“先删后插”改为“按子表主键增删改”（删除→更新→插入），子表主键保持稳定。
+
 ### 9.3 环境问题：systemd nginx.service 循环重启（重要）
 
 本机存在 `/etc/systemd/system/nginx.service`（enabled），与手动运行中的 `/opt/nginx` nginx **争抢 80 端口**：systemd 服务陷入每数秒一次的重启循环，error.log 被 `bind() to 0.0.0.0:80 failed` 刷屏。该循环会造成**间歇性 POST /func 连接被断开**（表现为页面偶发无响应、测试报 RemoteDisconnected）。
@@ -376,7 +380,7 @@ nginx (含 ngx_http_postgres_module，配置见 /opt/nginx/conf)
 PostgreSQL
    ├─ gm.check_login(token, 权限点)   ← 每个业务函数入口统一鉴权
    ├─ 业务函数（sysinfo.* / gm.* / 未来 hr.*、fin.*、erp.* …）
-   └─ gm.returnjson(错误码, 数据)     ← 统一 JSON 包装：{errorcode, message, info}
+   └─ gm.returnjson(错误码, 数据)     ← 统一 JSON 包装：{errorcode, message, info}（错误码分段规范见 docs/DEVELOPMENT.md「错误码编码规范」）
 ```
 
 ### 11.2 一次典型请求的完整流程（以“查询员工列表”为例）
@@ -435,7 +439,7 @@ nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。�
 | 1. 规划 schema | `CREATE SCHEMA hr;` | 一个业务域一个 schema：hr（人事）、fin（财务）、erp… |
 | 2. 建业务表 | `hr.emp` 等表 | `OWNER gm`，主键 `bigint`，建议带逻辑删除/审计字段 |
 | 3. 写函数 | `hr.emp_query/add/edit/merge/del/undel` | 入口 `gm.check_login`，出口 `gm.returnjson` |
-| 4. 配权限 | `sysinfo.sysaction` 节点 | 菜单节点 + 各操作节点，`INSERT ... ON CONFLICT DO NOTHING` |
+| 4. 配权限 | `sysinfo.sysaction` 节点 | 菜单节点 + 各操作节点，`INSERT ... ON CONFLICT (sysactionid) DO UPDATE`（重复执行自愈迁移） |
 | 5. 声明前端 | `html/assets/modules.js` 的 `P()` | 大多数 CRUD 页面零 JS 定制 |
 | 6. 部署验证 | psql 应用 + nginx restart + 冒烟 | 见 12.5 上线清单 |
 
@@ -445,7 +449,7 @@ nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。�
 modules.js、index.html 版本号、README、TEST_PLAN）：
 
 ```bash
-cd /home/ad/nginx-build/nginx-1.30.6/src/modules/nginx_db
+cd /path/to/nginx_db
 
 # 1) 参照 tools/examples/ 写一份 JSON 定义（kind: single / parent_child / tree）
 cp tools/examples/example_notice.json tools/my_hr_emp.json
@@ -464,7 +468,24 @@ sudo systemctl restart nginx     # 新函数必须重启 nginx 才能经 HTTP �
 
 生成器已处理的细节：函数注释（`COMMENT ON FUNCTION`，可在接口文档页在线维护）、
 分页/模糊查询、逻辑删除与恢复、树形 `idpath/idlevel/idcount` 递归维护、
-父子表 `upname` 联查、循环父级与“有子级禁删”校验、权限节点幂等插入。
+树表 `upname` 联查、循环父级与“有子级禁删”校验、树表建表自动内置 id=100 默认根节点
+（幂等去重）、权限节点幂等插入。
+
+**父子表（parent_child）与权限子表的“整表 JSON”语义**：以父表为主模块，子表不建独立接口——
+父表 `_query` 每行聚合返回 `<子表>json`，父表 `_add/_edit/_merge` 接收 `p_<子表>json`
+在**同一事务内按子表主键做增删改**（先按提交主键差集删除、再按主键更新、最后插入新行，
+不整表先删后插，子表主键保持稳定，外部按子表主键的关联不会失效）；前端明细把子表整表
+包装成 JSON 一次性提交。员工权限（`operinfopermission_edit`+`operpermissionjson`）、
+角色权限（`roleinfo_edit`+`rolepermissionjson`）同此语义。系统内置操作员
+（`operatorid in (10000,100000)`）禁止删除，相关 del 接口一律返回 **100036**。
+
+**基于已有表的父子联动模块**：父表与子表均已存在时，管理台“生成模块”可直接选择
+两表并指定子表的**关联字段**（默认取与父表主键同名的列）——生成独立联动模块：
+函数名以 `父表_子表` 为前缀（`<父表>_<子表>_query/_add/_edit/_merge/_del`，共 5 个，
+**不含 undel**，与父/子表各自单独生成的 CRUD 不重名）；`modules.js` 生成独立模块
+（模块 id=`父表_子表`）并挂 `SUBTABLECFG`；权限节点照常生成（接口地址以联动前缀
+命名，按 actionurl 判重）。不生成任何 CREATE TABLE；子表的 `isused/systemid`
+按实际结构条件化写入。
 
 ### 12.3 方式二：手工开发（复杂业务，如 ERP 单据联动）
 
@@ -517,14 +538,17 @@ ALTER FUNCTION hr.emp_query(varchar,int,int,varchar) OWNER TO gm;
 ```sql
 -- 菜单目录：人事管理（挂在根 100 之下）
 INSERT INTO sysinfo.sysaction (isused,idpath,idlevel,idcount,upid,params,systemid,sysactionid,sysactionname,actionid,isdefault)
-VALUES (1,'100.9200',2,0,100,NULL,100,9200,'人事管理',NULL,NULL) ON CONFLICT DO NOTHING;
+VALUES (1,'100.9200',2,0,100,NULL,100,9200,'人事管理',NULL,NULL)
+ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXCLUDED.idpath,
+  idlevel=EXCLUDED.idlevel, idcount=EXCLUDED.idcount, sysactionname=EXCLUDED.sysactionname, actionid=EXCLUDED.actionid;
 -- 菜单：员工档案 + 六个操作点（query 沿用菜单号，写操作各占一号）
 INSERT INTO sysinfo.sysaction (isused,idpath,idlevel,idcount,upid,params,systemid,sysactionid,sysactionname,actionid,isdefault)
 VALUES (1,'100.9200.9201',3,0,9200,NULL,100,9201,'员工档案',NULL,NULL),
        (1,'100.9200.9201.9211',4,0,9201,NULL,100,9211,'新增员工',9211,NULL),
        (1,'100.9200.9201.9212',4,0,9201,NULL,100,9212,'修改员工',9212,NULL),
        (1,'100.9200.9201.9213',4,0,9201,NULL,100,9213,'删除员工',9213,NULL)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXCLUDED.idpath,
+  idlevel=EXCLUDED.idlevel, idcount=EXCLUDED.idcount, sysactionname=EXCLUDED.sysactionname, actionid=EXCLUDED.actionid;
 ```
 
 - 函数内 `check_login` 的权限点必须与 `actionid` 一致：query 用菜单节点号（9201），
@@ -535,9 +559,9 @@ ON CONFLICT DO NOTHING;
 ### 12.5 上线清单（每个新模块都走一遍）
 
 1. SQL 已同步进 `extension/ngxdb_postgresql.sql`（唯一事实来源，手工开发也要回写 dump）。
-2. `--apply`（或 psql 执行）到在用库；`sysaction` 插入用了 `ON CONFLICT DO NOTHING`，可重复执行。
+2. `--apply`（或 psql 执行）到在用库；`sysaction` 插入用了 `ON CONFLICT (sysactionid) DO UPDATE`（幂等且自愈迁移），可重复执行。
 3. `--deploy` 或手动拷贝 `html/` 到 `/opt/nginx/html/ngxdb`，`index.html` 版本号 +1。
-4. `sudo systemctl restart nginx`（新函数必须重启才能经 HTTP 访问）。
+4. 热加载函数清单：`curl "https://127.0.0.1/func/_reloadfunctions?token=<postgresreloadtoken>"`（新函数必须重载后才能经 HTTP 访问，免重启 nginx）。
 5. 冒烟：无 token→100005；伪 token→100012；admin 带 token→0；写操作各自权限点生效。
 6. 按 `test/TEST_PLAN.md` 模板补充并执行该模块的测试场景。
 
@@ -595,6 +619,19 @@ ON CONFLICT DO NOTHING;
 说明：token 为 AES/PGP 加密串（`sysinfo.aes_decrypt`，密钥分两层：`actions(101).params`
 与 `systeminfo.prikey`），并在 `check_login` 中二次解密比对 `operinfo.tokenkey/tokentime`；
 所有业务函数入口强制调用，前端隐藏按钮仅是体验优化。
+
+**子系统加密字段说明（`systeminfo.prikey` / `systeminfo.algorithm`）**：
+
+- `systeminfo.prikey`：该子系统的 **AES 对称密钥**。登录签发 token 时，操作员信息
+  （操作员编号、签发时间、有效期）先用该子系统 `prikey` 做**内层 AES 加密**，
+  再用全局密钥（`actions(101).params`）做**外层加密**；`check_login` 校验时按相反
+  顺序两层解密。因此**不同子系统的 token 互不相通**（密钥不同无法解密内层），
+  无 `prikey` 也无法伪造或篡改令牌内容。
+- `systeminfo.algorithm`：该子系统 token 使用的**加密算法标识**——`1 = AES-128`、
+  `2 = AES-256`，签发与校验时按该值选择对应的加/解密处理。
+- **注意**：修改某子系统的 `prikey` 或 `algorithm` 后，该系统**已签发的 token 将全部
+  无法解密**（所有在线用户需重新登录）；请仅在密钥泄露等必要情况下轮换，并通知
+  该系统用户重新登录。
 
 ### 14.2 性能验证（curl 实测，15 次取平均）
 
@@ -739,4 +776,51 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\run_all.ps1 -PgPassword
 3. `sudo`/`systemctl`/`cron` 相关逻辑在 Windows 分别由管理员权限、`nginx -s stop`
    + 进程启动、`schtasks` 计划任务替代。
 4. 自签证书在浏览器同样会提示不受信任，生产请更换 CA 证书。
+
+## 十七、本地管理台（admin）
+
+`admin/` 是一个**独立**的本地开发/运维工具（与 ngxdb 登录权限体系无关、免登录、仅限本机使用），
+用于管理本地 PostgreSQL 表并把 **单表 / 父子表 / 树表** 一键生成为 ngxdb 业务模块：
+
+1. **模式管理**：新建模式（schema，可附中文说明），创建时自动完成与 `sysinfo`/`gm` 一致的
+   最小授权，确保发布的函数可被 nginx（conn 账号）直接调用。
+2. **表管理**：新建/修改/删除本地 PostgreSQL 表。新建表**不强制** `isused/systemid` 结构列
+   （弹窗内提供"＋ 启用列(isused)"、"＋ 系统列(systemid)"快捷按钮，由用户决定是否添加）；
+   字段类型覆盖 PostgreSQL 常用类型（白名单 28 种，含别名写法，支持 `[]` 数组后缀如
+   `integer[]`），`varchar/char/numeric` 的长度/精度可自定义；
+   树表自动带树形结构列并**内置 id=100 的默认根节点**（幂等去重，重复执行不重复插入），
+   父子表可一次建父表+子表；**修改表与新建表同表单**（预填表信息，
+   按差异生成 ADD/ALTER TYPE/COMMENT/DROP 事务，结构与主键列受保护；删除列时自动清理
+   该列的外键登记 fk_meta）；**删除表**连带清理生成的函数、权限节点（sysaction/actions）、
+   前端模块配置（modules.js）与外键登记。
+3. **模块生成**：选择表并指定表类型（single / parent_child / tree）→ 在**权限树**中选择挂载
+   权限节点（树支持模糊搜索定位、节点增删改、同级上移/下移——搜索出多个结果时可在搜索
+   结果间移动）→ 字段勾选 → 一键生成 plpgsql SQL + modules.js 前端
+   配置与权限节点（操作权限**同步写入 actions 具体权限表**，按 actionurl 判重），附页面预览；
+   操作权限 actionid 修改后其后的 ID 自动顺延 +1；可指定权限归属**系统**（systemid）。
+   **重新生成时优先载入该表已发布的权限**——菜单/权限 ID 保持稳定，不重复生成权限节点；
+   **父子表**生成时父表与子表均从**已建的表**中选择（子表关联字段下拉为子表全部列，
+   默认选中与父表主键同名的列），生成**独立联动模块**：函数名为
+   `父表名_子表名_query/add/edit/merge/del`（共 5 个，**无 undel**，与父/子表各自
+   单独生成的 CRUD 不重名），模块 id 为 `父表_子表`，不生成建表语句。
+4. **发布**：事务应用 SQL 到业务库（自动探测 nginx postgres 模块实际连接的库）→ 同步
+   modules.js/index.html 到项目与部署目录 → 经 `/func/_reloadfunctions` 热重载 → 新模块即刻
+   在 ngxdb 前端可用；**ngxdb 前端左侧菜单按 sysaction 权限树动态渲染**：目录/功能节点生成
+   多级菜单，**指向具体函数的操作级节点（actionid 非空）表示到尾部、不生成菜单**——菜单到
+   功能级为止（如 ERP→字典）；功能节点有对应模块页面的直接进入（子页面代码不变），暂无
+   模块页面的显示空占位页；表格列头显示字段中文注释。
+
+入口：`http://127.0.0.1:8765/`（后端仅监听本机，页面由后端直接服务，不经 nginx）。
+一键安装脚本已集成（`--skip-admin` 可跳过）；手动部署：`bash admin/deploy.sh`。
+安全边界：来源限本机、标识符/类型白名单、写路径白名单、SQL 事务回滚、发布前自动备份。
+详见 `admin/README.md`。
+
+## 十八、许可证
+
+本项目以 [MIT License](LICENSE) 发布。
+
+- `postgres/ngx_http_postgres_module.c` 为原创实现的 nginx PostgreSQL 网关模块，
+  运行时依赖 libpq（PostgreSQL 客户端库，PostgreSQL License）；
+- 各目录内保留的第三方版权与许可声明（如有）仍归其原作者所有。
+
 

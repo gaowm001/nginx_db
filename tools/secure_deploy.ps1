@@ -1,6 +1,6 @@
 # NGXDB 等保整改一键部署 —— Windows 版（需管理员 PowerShell）
 # 用法： powershell -NoProfile -ExecutionPolicy Bypass -File tools\secure_deploy.ps1
-# 内容： 自签 TLS 证书 + 安全加固 nginx.conf（HTTPS/限流/安全头/ngxapp 口令轮换）
+# 内容： 自签 TLS 证书 + 安全加固 nginx.conf（HTTPS/限流/安全头/conn 口令轮换）
 #        + 每日备份计划任务（schtasks）
 # 前提： C:\nginx 已部署 nginx（含 conf\nginx.conf.template 同源的模板）、psql/openssl 在 PATH
 param(
@@ -34,11 +34,11 @@ if (-not (Test-Path $pem)) {
     }
 }
 
-Write-Host '[2/5] 轮换专用应用账号 ngxapp 口令...'
+Write-Host '[2/5] 轮换连接账号 conn 口令...'
 $newPass = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 $env:PGPASSWORD = $PgSuperPassword
-& psql -h $PgHost -U $PgSuperUser -d $DbName -tA -c ("ALTER ROLE ngxapp PASSWORD '{0}'" -f $newPass) | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Error 'ngxapp 口令轮换失败（确认已导入含 ngxapp 的最新 dump）'; exit 1 }
+& psql -h $PgHost -U $PgSuperUser -d $DbName -tA -c ("ALTER ROLE conn PASSWORD '{0}'" -f $newPass) | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error 'conn 口令轮换失败（确认角色 conn 已存在）'; exit 1 }
 
 Write-Host '[3/5] 安装安全加固 nginx.conf...'
 $tpl = Join-Path $PSScriptRoot 'nginx.conf.template'
@@ -46,7 +46,9 @@ $conf = Join-Path $NginxDir 'conf\nginx.conf'
 $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
 if (Test-Path $conf) { Copy-Item $conf "$conf.bak.$ts" -Force }
 $content = (Get-Content $tpl -Raw)
-$content = $content.Replace('__NGXAPP_PASS__', $newPass)
+$content = $content.Replace('__CONN_PASS__', $newPass)
+$reloadToken = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+$content = $content.Replace('__RELOAD_TOKEN__', $reloadToken)
 # 证书路径改为绝对路径，避免 prefix 解析歧义
 $content = $content.Replace('cert/ngxdb.pem', ($pem -replace '\\', '/'))
 $content = $content.Replace('cert/ngxdb.key', ($key -replace '\\', '/'))

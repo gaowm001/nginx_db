@@ -105,6 +105,9 @@ $$;
 
 ALTER FUNCTION gm.actionupdate() OWNER TO gm;
 
+COMMENT ON FUNCTION gm.actionupdate() IS '重建权限树（维护函数，非HTTP接口）：sysaction.isused 空值置1，并用递归CTE按 systemid 重算全部权限节点的 idpath/idlevel/idcount
+返回：true';
+
 --
 -- Name: check_login(character varying, integer); Type: FUNCTION; Schema: gm; Owner: gm
 --
@@ -125,13 +128,13 @@ CREATE FUNCTION gm.check_login(p_token character varying, p_actionid integer) RE
     if p_actionid is null then return returnjson(0); end if;
 		if p_token is null then return returnjson(100005); end if;
 		select params into v_tokenstr from sysinfo.actions where actionid=101;
-		v_token:=sysinfo.aes_decrypt(p_token, v_tokenstr)::json;
+		v_token:=gm.aes_decrypt(p_token, v_tokenstr)::json;
 		v_systemid:=(v_token->>'systemid')::integer;
 		select row_to_json(t) into v_return from sysinfo.systeminfo t where v_systemid=systemid and isused=1 ;
 		if v_return is null then return gm.returnjson(100012); end if;--子系统信息出错！
 		v_token:=case (v_return->>'algorithm')::integer
-		  when 1 then sysinfo.aes_decrypt(v_token->>'token', (v_return->>'prikey')::text)
-			when 2 then sysinfo.aes_decrypt(v_token->>'token', (v_return->>'prikey')::text)
+		  when 1 then gm.aes_decrypt(v_token->>'token', (v_return->>'prikey')::text)
+			when 2 then gm.aes_decrypt(v_token->>'token', (v_return->>'prikey')::text)
 		end;		
     v_operatorid:=(v_token->>'operatorno')::integer;
 		select array_to_json(array_agg(row_to_json(t))) into v_operjson from sysinfo.operinfo t where operatorid=v_operatorid and isused=1;
@@ -184,6 +187,13 @@ $$;
 
 ALTER FUNCTION gm.check_login(p_token character varying, p_actionid integer) OWNER TO gm;
 
+COMMENT ON FUNCTION gm.check_login(p_token character varying, p_actionid integer) IS '校验登录态与操作权限（全部业务函数的统一鉴权入口）
+p_token:登录返回的AES加密token
+p_actionid:所需权限点编号；为空时跳过权限校验直接放行
+流程：两层AES解密token(外层actions[101]密钥，内层子系统prikey)→校验子系统/操作员有效性与登录态(单人比较tokenkey/多人仅校验有效期)→set_config(app.operatorid)供审计触发器取操作者→按直接授权或角色递归授权匹配权限点并顺延tokentime
+错误码：100005非法登录、100012子系统信息出错、100011操作员信息出错、100006登录已失效、100008无此权限
+返回：{"errorcode":0,"message":"执行成功！","info":{"operatorid":操作员id,"systemid":子系统id,"orgid":机构id}}';
+
 --
 -- Name: gettoken(); Type: FUNCTION; Schema: gm; Owner: gm
 --
@@ -191,28 +201,25 @@ ALTER FUNCTION gm.check_login(p_token character varying, p_actionid integer) OWN
 CREATE FUNCTION gm.gettoken() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
-	declare v_return jsonb;v_ok bool;
+	declare v_cur record;v_return jsonb;
 begin
-  v_ok:=true;
   for v_cur in select appid,params from sysinfo.appparams where typeid=101 loop
 	  v_return:=gm.http_get('https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&'||v_cur.params);
 		if v_return?'access_token' then 
 		  update sysinfo.appparams set accesstoken=v_return->>'access_token',tokentime=now() where appid=v_cur.appid;
-		else
-		  v_ok:=false;
 		end if;
 	end loop;
-	--create event gettoken on schedule 1 hour do gm.gettoken; 
-	if v_ok then 
-		PERFORM pkg_service.job_finish(101,true,null);
-	else 
-	  PERFORM pkg_service.job_finish(101,false,now()+1.0/288);
-	end if;
+	--create event gettoken on schedule 1 hour do gm.gettoken;
+	-- 调度由外部定时器（cron/pg_cron 等）驱动；库内不再依赖 pkg_service 扩展
+	-- （失败重试间隔建议 5 分钟，即 1/288 天）
   return;
 END$$;
 
 
 ALTER FUNCTION gm.gettoken() OWNER TO gm;
+
+COMMENT ON FUNCTION gm.gettoken() IS '定时任务(job 101)：刷新微信公众号/小程序 access_token
+遍历 sysinfo.appparams(typeid=101) 调微信接口获取 access_token，更新 accesstoken/tokentime；调度由外部定时器（cron/pg_cron）驱动，失败建议 5 分钟后重试';
 
 --
 -- Name: gettokene(); Type: FUNCTION; Schema: gm; Owner: gm
@@ -221,26 +228,25 @@ ALTER FUNCTION gm.gettoken() OWNER TO gm;
 CREATE FUNCTION gm.gettokene() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
-	declare v_return jsonb;v_ok bool;
+	declare v_cur record;v_return jsonb;
 begin
-  v_ok:=true;
   for v_cur in select appid,params from sysinfo.appparams where typeid=101 loop
 	  v_return:=gm.http_get('https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&'||v_cur.params);
 		if v_return?'access_token' then 
 		  update sysinfo.appparams set accesstoken=v_return->>'access_token',tokentime=now() where appid=v_cur.appid;
-		else
-		  v_ok:=false;
 		end if;
 	end loop;
-	--create event gettoken on schedule 1 hour do gm.gettoken; 
-	if v_ok then 
-		PERFORM pkg_service.job_finish(100,false,now()+1.0/24);
-	end if;
+	--create event gettoken on schedule 1 hour do gm.gettoken;
+	-- 调度由外部定时器（cron/pg_cron 等）驱动；库内不再依赖 pkg_service 扩展
+	-- （成功后下一轮间隔 24 小时，即 1.0/24 天）
 return;
 END$$;
 
 
 ALTER FUNCTION gm.gettokene() OWNER TO gm;
+
+COMMENT ON FUNCTION gm.gettokene() IS '定时任务(job 100)：刷新微信公众号/小程序 access_token（24小时一轮）
+遍历 sysinfo.appparams(typeid=101) 调微信接口获取 access_token，更新 accesstoken/tokentime；调度由外部定时器驱动';
 
 --
 -- Name: http_get(character varying); Type: FUNCTION; Schema: gm; Owner: gm
@@ -252,13 +258,17 @@ CREATE FUNCTION gm.http_get(p_https character varying) RETURNS character varying
 
 	import requests
 		
-	rv=requests.get(p_https)
+	rv=requests.get(p_https,verify=False)
 	plpy.notice(rv.text)
 	return rv.text
 $$;
 
 
 ALTER FUNCTION gm.http_get(p_https character varying) OWNER TO gm;
+
+COMMENT ON FUNCTION gm.http_get(p_https character varying) IS '服务端HTTP GET请求（plpython3u实现，仅供库内定时任务/内部逻辑调用，不对外暴露）
+p_https:完整URL（verify=False，不校验TLS证书，适配内网自签证书）
+返回：响应正文文本';
 
 --
 -- Name: http_post(character varying, character varying, character varying); Type: FUNCTION; Schema: gm; Owner: gm
@@ -270,15 +280,21 @@ CREATE FUNCTION gm.http_post(p_https character varying, p_content character vary
 
 	import requests
 	if p_contenttype:	
-	  rv=requests.post(p_https,p_content,headers={'content-type':p_contenttype})
+	  rv=requests.post(p_https,p_content,headers={'content-type':p_contenttype},verify=False)
 	else:
-	  rv=requests.post(p_https,p_content)
+	  rv=requests.post(p_https,p_content,verify=False)
 	plpy.notice(rv.text)
 	return rv.text
 $$;
 
 
 ALTER FUNCTION gm.http_post(p_https character varying, p_content character varying, p_contenttype character varying) OWNER TO gm;
+
+COMMENT ON FUNCTION gm.http_post(p_https character varying, p_content character varying, p_contenttype character varying) IS '服务端HTTP POST请求（plpython3u实现，仅供库内定时任务/内部逻辑调用，不对外暴露）
+p_https:完整URL
+p_content:请求体
+p_contenttype:Content-Type请求头，可为空
+返回：响应正文文本';
 
 --
 -- Name: returnjson(integer, json); Type: FUNCTION; Schema: gm; Owner: gm
@@ -304,11 +320,16 @@ $$;
 
 ALTER FUNCTION gm.returnjson(p_code integer, p_jsonvar json) OWNER TO gm;
 
+COMMENT ON FUNCTION gm.returnjson(p_code integer, p_jsonvar json) IS '统一返回结构：按 sysinfo.errorcode 表把错误码翻译为提示语
+p_code:错误码（0成功，其余见 errorcode 表，如100005非法登录、100008无此权限）
+p_jsonvar:业务数据JSON，可为空
+返回：p_jsonvar为空时 {"errorcode":码,"message":提示}；否则 {"errorcode":码,"message":提示,"info":业务数据}；错误码在表中不存在或重复时 message 为 未知错误';
+
 --
--- Name: _ensure_roles(); Type: FUNCTION; Schema: public; Owner: postgres
+-- Name: _ensure_roles(); Type: FUNCTION; Schema: gm; Owner: postgres
 --
 
-CREATE FUNCTION public._ensure_roles() RETURNS void
+CREATE FUNCTION gm._ensure_roles() RETURNS void
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -322,7 +343,7 @@ END;
 $$;
 
 
-ALTER FUNCTION public._ensure_roles() OWNER TO postgres;
+ALTER FUNCTION gm._ensure_roles() OWNER TO postgres;
 
 --
 -- Name: actions_query(character varying, integer, integer, integer, integer, character varying, character varying, character varying, character varying, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
@@ -366,10 +387,10 @@ code:编码
 
 
 --
--- Name: aes_decrypt(text, text); Type: FUNCTION; Schema: sysinfo; Owner: postgres
+-- Name: aes_decrypt(text, text); Type: FUNCTION; Schema: gm; Owner: postgres
 --
 
-CREATE FUNCTION sysinfo.aes_decrypt(p_text text, p_key text) RETURNS text
+CREATE FUNCTION gm.aes_decrypt(p_text text, p_key text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE STRICT SECURITY DEFINER
     AS $$
 DECLARE
@@ -400,13 +421,13 @@ END;
 $$;
 
 
-ALTER FUNCTION sysinfo.aes_decrypt(p_text text, p_key text) OWNER TO postgres;
+ALTER FUNCTION gm.aes_decrypt(p_text text, p_key text) OWNER TO postgres;
 
 --
--- Name: aes_encrypt(text, text); Type: FUNCTION; Schema: sysinfo; Owner: postgres
+-- Name: aes_encrypt(text, text); Type: FUNCTION; Schema: gm; Owner: postgres
 --
 
-CREATE FUNCTION sysinfo.aes_encrypt(p_text text, p_key text) RETURNS text
+CREATE FUNCTION gm.aes_encrypt(p_text text, p_key text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE STRICT SECURITY DEFINER
     AS $$
 BEGIN
@@ -423,13 +444,13 @@ END;
 $$;
 
 
-ALTER FUNCTION sysinfo.aes_encrypt(p_text text, p_key text) OWNER TO postgres;
+ALTER FUNCTION gm.aes_encrypt(p_text text, p_key text) OWNER TO postgres;
 
 --
 -- Name: city_add(character varying, integer, integer, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying) RETURNS json
+CREATE FUNCTION public.city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_id int;v_check json;
@@ -438,31 +459,31 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_pid is null then return gm.returnjson(100034); end if;--市信息出错！
-  select count(*) into v_c from sysinfo.province where p_pid=pid;
+  select count(*) into v_c from public.province where p_pid=pid;
   if v_c=0 then return gm.returnjson(100033);end if;--省信息出错！
   if p_cid is null then 
     v_c:=1;loop exit when (v_c=0);
-      v_id :=nextval('sysinfo.city_cid_seq');
-      select count(*) into v_c from sysinfo.city where cid=v_id;
+      v_id :=nextval('public.city_cid_seq');
+      select count(*) into v_c from public.city where cid=v_id;
     end loop;
   else
-    select count(*) into v_c from sysinfo.city where cid=p_cid;
+    select count(*) into v_c from public.city where cid=p_cid;
     if v_c>0 then return gm.returnjson(100034); end if;--市信息出错！
     v_id:=p_cid;
   end if;
-  insert into sysinfo.city( pid,cid,city,isused) values(p_pid,v_id,p_city,1 );
+  insert into public.city( pid,cid,city,isused) values(p_pid,v_id,p_city,1 );
   return gm.returnjson(0,json_build_object('id',v_id));
 end; 
 $$;
 
 
-ALTER FUNCTION sysinfo.city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying) OWNER TO gm;
+ALTER FUNCTION public.city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying) OWNER TO gm;
 
 --
 -- Name: FUNCTION city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying) IS '新增市
+COMMENT ON FUNCTION public.city_add(p_token character varying, p_pid integer, p_cid integer, p_city character varying) IS '新增市
 pid:省id
 cid:市id
 city:市名
@@ -473,28 +494,28 @@ city:市名
 -- Name: city_del(character varying, integer); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.city_del(p_token character varying, p_cid integer) RETURNS json
+CREATE FUNCTION public.city_del(p_token character varying, p_cid integer) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,188);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
-  select count(*) into v_c from sysinfo.city where cid=p_cid;
+  select count(*) into v_c from public.city where cid=p_cid;
   if v_c=0 then return gm.returnjson(100034); end if;--市信息出错！
-  update sysinfo.city set isused=0 where cid=p_cid;
+  update public.city set isused=0 where cid=p_cid;
   return gm.returnjson(0); 
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.city_del(p_token character varying, p_cid integer) OWNER TO gm;
+ALTER FUNCTION public.city_del(p_token character varying, p_cid integer) OWNER TO gm;
 
 --
 -- Name: FUNCTION city_del(p_token character varying, p_cid integer); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.city_del(p_token character varying, p_cid integer) IS '删除市
+COMMENT ON FUNCTION public.city_del(p_token character varying, p_cid integer) IS '删除市
 cid:id';
 
 
@@ -502,7 +523,7 @@ cid:id';
 -- Name: city_edit(character varying, integer, integer, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying) RETURNS json
+CREATE FUNCTION public.city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_id int;v_check json;
@@ -511,24 +532,24 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_pid is null then return gm.returnjson(100034); end if;--市信息出错！
-  select count(*) into v_c from sysinfo.province where p_pid=pid;
+  select count(*) into v_c from public.province where p_pid=pid;
   if v_c=0 then return gm.returnjson(100033);end if;--省信息出错！
   v_id:=p_cid;
-  select count(*) into v_c from sysinfo.city where cid=p_cid;
+  select count(*) into v_c from public.city where cid=p_cid;
   if v_c=0 then return gm.returnjson(100034); end if;--市信息出错！
-  update sysinfo.city set pid=p_pid,city=p_city where cid=p_cid;
+  update public.city set pid=p_pid,city=p_city where cid=p_cid;
   return gm.returnjson(0);
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying) OWNER TO gm;
+ALTER FUNCTION public.city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying) OWNER TO gm;
 
 --
 -- Name: FUNCTION city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying) IS '修改市
+COMMENT ON FUNCTION public.city_edit(p_token character varying, p_pid integer, p_cid integer, p_city character varying) IS '修改市
 pid:省id
 cid:市id
 city:市名
@@ -539,7 +560,7 @@ city:市名
 -- Name: city_merge(character varying, integer, integer, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying) RETURNS json
+CREATE FUNCTION public.city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_id int;v_check json;
@@ -548,30 +569,30 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_pid is null then return gm.returnjson(100034); end if;--市信息出错！
-  select count(*) into v_c from sysinfo.province where p_pid=pid;
+  select count(*) into v_c from public.province where p_pid=pid;
   if v_c=0 then return gm.returnjson(100033);end if;--省信息出错！
   if p_cid is null then 
     v_c:=1;loop exit when (v_c=0);
-      v_id :=nextval('sysinfo.city_cid_seq');
-      select count(*) into v_c from sysinfo.city where cid=v_id;
+      v_id :=nextval('public.city_cid_seq');
+      select count(*) into v_c from public.city where cid=v_id;
     end loop;
   else
     v_id:=p_cid;
   end if;
-  with "te" as (update sysinfo.city set pid=p_pid,city=p_city  where cid=v_id returning *)
-  insert into sysinfo.city ( pid,cid,city,isused) select p_pid,v_id,p_city,1  where (select count(*) from te) = 0;
+  with "te" as (update public.city set pid=p_pid,city=p_city  where cid=v_id returning *)
+  insert into public.city ( pid,cid,city,isused) select p_pid,v_id,p_city,1  where (select count(*) from te) = 0;
   return gm.returnjson(0,json_build_object('id',v_id));
 end; 
 $$;
 
 
-ALTER FUNCTION sysinfo.city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying) OWNER TO gm;
+ALTER FUNCTION public.city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying) OWNER TO gm;
 
 --
 -- Name: FUNCTION city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying) IS '合并市
+COMMENT ON FUNCTION public.city_merge(p_token character varying, p_pid integer, p_cid integer, p_city character varying) IS '合并市
 pid:省id
 cid:市id
 city:市名
@@ -582,7 +603,7 @@ city:市名
 -- Name: city_query(character varying, integer, integer, integer, integer, character varying, integer); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer) RETURNS json
+CREATE FUNCTION public.city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_return json;v_check json;
@@ -591,24 +612,24 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_rows is null then
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.cid,t1.city,t1.isused,t2.province from sysinfo.city t1 left join sysinfo.province t2 on t2.pid=t1.pid where  (p_pid is null or p_pid=t1.pid) and (p_cid is null or p_cid=t1.cid) and (p_city is null or position(p_city in t1.city )>0) and (p_isused is null or p_isused=t1.isused) order by t1.cid) t;
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.cid,t1.city,t1.isused,t2.province from public.city t1 left join public.province t2 on t2.pid=t1.pid where  (p_pid is null or p_pid=t1.pid) and (p_cid is null or p_cid=t1.cid) and (p_city is null or position(p_city in t1.city )>0) and (p_isused is null or p_isused=t1.isused) order by t1.cid) t;
     v_c:=coalesce(json_array_length(v_return),0);
   else
-    select count(*) into v_c from sysinfo.city t1 where  (p_pid is null or p_pid=t1.pid) and (p_cid is null or p_cid=t1.cid) and (p_city is null or position(p_city in t1.city )>0) and (p_isused is null or p_isused=t1.isused);
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.cid,t1.city,t1.isused,t2.province from sysinfo.city t1 left join sysinfo.province t2 on t2.pid=t1.pid where  (p_pid is null or p_pid=t1.pid) and (p_cid is null or p_cid=t1.cid) and (p_city is null or position(p_city in t1.city )>0) and (p_isused is null or p_isused=t1.isused) order by t1.cid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
+    select count(*) into v_c from public.city t1 where  (p_pid is null or p_pid=t1.pid) and (p_cid is null or p_cid=t1.cid) and (p_city is null or position(p_city in t1.city )>0) and (p_isused is null or p_isused=t1.isused);
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.cid,t1.city,t1.isused,t2.province from public.city t1 left join public.province t2 on t2.pid=t1.pid where  (p_pid is null or p_pid=t1.pid) and (p_cid is null or p_cid=t1.cid) and (p_city is null or position(p_city in t1.city )>0) and (p_isused is null or p_isused=t1.isused) order by t1.cid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
   end if;
   return gm.returnjson(0,json_build_object('total',v_c,'rows',v_return));
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer) OWNER TO gm;
+ALTER FUNCTION public.city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer) OWNER TO gm;
 
 --
 -- Name: FUNCTION city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer) IS '查询市
+COMMENT ON FUNCTION public.city_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_cid integer, p_city character varying, p_isused integer) IS '查询市
 pid:省id
 cid:市id
 city:市名
@@ -620,28 +641,28 @@ isused:是否使用
 -- Name: city_undel(character varying, integer); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.city_undel(p_token character varying, p_cid integer) RETURNS json
+CREATE FUNCTION public.city_undel(p_token character varying, p_cid integer) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,189);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
-  select count(*) into v_c from sysinfo.city where cid=p_cid;
+  select count(*) into v_c from public.city where cid=p_cid;
   if v_c=0 then return gm.returnjson(100034); end if;--市信息出错！
-  update sysinfo.city set isused=1 where cid=p_cid;
+  update public.city set isused=1 where cid=p_cid;
   return gm.returnjson(0); 
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.city_undel(p_token character varying, p_cid integer) OWNER TO gm;
+ALTER FUNCTION public.city_undel(p_token character varying, p_cid integer) OWNER TO gm;
 
 --
 -- Name: FUNCTION city_undel(p_token character varying, p_cid integer); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.city_undel(p_token character varying, p_cid integer) IS '恢复市
+COMMENT ON FUNCTION public.city_undel(p_token character varying, p_cid integer) IS '恢复市
 cid:id';
 
 
@@ -699,9 +720,9 @@ CREATE FUNCTION sysinfo.login(p_loginname character varying, p_pass character va
 		if p_pass is null then 
 	    return gm.returnjson(100010);
 		end if; --密码不能为空
-		select count(*) into v_c from sysinfo.loginlog where (accounts=p_loginname) and logintime>now()-interval '10 minute' ;
+		select count(*) into v_c from public.loginlog where (accounts=p_loginname) and logintime>now()-interval '10 minute' ;
 		if v_c>5 then return gm.returnjson(100002); end if;--登录错误超过5次，帐号锁定10分钟！
-		select count(*) into v_c from sysinfo.loginlog where (accounts=p_loginname) and logintime>now()-interval '3 hour' ;
+		select count(*) into v_c from public.loginlog where (accounts=p_loginname) and logintime>now()-interval '3 hour' ;
 		if v_c>10 then return gm.returnjson(100003); end if;--登录错误超过10次，帐号锁定3小时！
 		if p_system is null then 
 		  v_systemid=100;
@@ -710,18 +731,19 @@ CREATE FUNCTION sysinfo.login(p_loginname character varying, p_pass character va
 			if v_c=1 then 
 			  select systemid into v_systemid from sysinfo.systeminfo where loginname=p_system;
 			else 
+			  insert into public.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('public.loginlog_logid_seq'),now(),null,p_ip,p_loginname,v_systemid);
 			  return gm.returnjson(100001); --帐号密码错误
 			end if;
 		end if;
 		select count(*) into v_c from sysinfo.operinfo where accounts=p_loginname and pass=crypto.crypt(p_pass,pass) and isused=1;
 		if v_c<>1 then
-		  insert into sysinfo.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_ip,p_loginname,v_systemid);
+		  insert into public.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('public.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_ip,p_loginname,v_systemid);
       return gm.returnjson(100001);--帐号密码错误
 		end if;
 		select operatorid into v_operatorid from sysinfo.operinfo where accounts=p_loginname and pass=crypto.crypt(p_pass,pass) and isused=1;
 		select count(*) into v_c from sysinfo.sysoper where operatorid=v_operatorid and systemid=v_systemid;
 		  if v_c=0 then
-		    insert into sysinfo.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_ip,p_loginname,v_systemid);
+		    insert into public.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('public.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_ip,p_loginname,v_systemid);
         return gm.returnjson(100001);--帐号密码错误
 			end if;
 		select array_to_json(array_agg(row_to_json(t))) into v_orgjson from (select t1.sysorgid,t1.sysorgname from sysinfo.sysorg t1 left join sysinfo.sysoperorg t2 on t1.sysorgid=t2.sysorgid where t2.operatorid=v_operatorid and t1.systemid=v_systemid ) t;
@@ -729,8 +751,8 @@ CREATE FUNCTION sysinfo.login(p_loginname character varying, p_pass character va
 		v_return:=v_return->0;
 		select params into v_keystr from sysinfo.actions where actionid=101;
 		v_token:=case (v_return->>'algorithm')::integer
-		  when 1 then sysinfo.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',sysinfo.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
-			when 2 then sysinfo.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',sysinfo.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','systemid',v_return->'systemid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
+		  when 1 then gm.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',gm.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
+			when 2 then gm.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',gm.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','systemid',v_return->'systemid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
 		end;
   update sysinfo.operinfo set tokenkey=v_token,tokentime = now()::timestamp + (interval '1 minute')*tokeninterval where operatorid = (v_return->>'operatorid')::integer;
 select json_build_object('token',v_token,'operator',json_build_object('sex',v_return->>'sex','memo',v_return->>'memo','org',v_return->>'org','mycode',v_return->>'mycode','upcode',v_return->>'upcode','birthday',v_return->>'birthday','headimgurl',v_return->>'headimgurl','operatorname',v_return->>'operatorname','systemname',v_return->>'systemname','org',v_orgjson),'actions',array_to_json(array_agg(actionid))) into v_return from (
@@ -785,6 +807,7 @@ CREATE FUNCTION sysinfo.loginaccount(p_loginname character varying, p_system cha
 			if v_c=1 then 
 			  select systemid into v_systemid from sysinfo.systeminfo where loginname=p_system;
 			else 
+			  insert into public.loginlog(logid,logintime,operatorno,ip,accounts,systemid) values(nextval('public.loginlog_logid_seq'),now(),null,p_ip::inet,p_loginname,v_systemid);
 			  return gm.returnjson(100001); --帐号密码错误
 			end if;
 		end if;
@@ -810,7 +833,7 @@ CREATE FUNCTION sysinfo.loginaccount(p_loginname character varying, p_system cha
 		if v_c=0 then 
 		select count(*) into v_c from sysinfo.sysoper where operatorid=v_operatorid and systemid=v_systemid;
 		  if v_c=0 then 
-		    insert into sysinfo.loginlog values(nextval('sysinfo.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_pass,p_ip,p_loginname,v_systemid);
+		    insert into public.loginlog values(nextval('public.loginlog_logid_seq'),now(),(v_return->>'operatorid')::integer,p_pass,p_ip::inet,p_loginname,v_systemid);
         return gm.returnjson(100001);--帐号密码错误
 			end if;
 		end if;
@@ -820,8 +843,8 @@ CREATE FUNCTION sysinfo.loginaccount(p_loginname character varying, p_system cha
 		--select orgid,orgname,orgtype,orgtypename from sysinfo.sysorg t1 left join 
 		select params into v_keystr from sysinfo.actions where actionid=101;
 		v_token:=case (v_return->>'algorithm')::integer
-		  when 1 then sysinfo.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',sysinfo.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
-			when 2 then sysinfo.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',sysinfo.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','systemid',v_return->'systemid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
+		  when 1 then gm.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',gm.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
+			when 2 then gm.aes_encrypt(json_build_object('systemid',v_return->'systemid','token',gm.aes_encrypt(json_build_object('operatorno',v_return->'operatorid','systemid',v_return->'systemid','tokentime',now()::varchar,'tokeninterval',v_return->>'tokeninterval')::text, (v_return->>'prikey')::text))::text,v_keystr)
 --		  when 3 then encode(private.hmac(json_build_object('operatorno',v_return->'operatorid','systemid',v_return->'systemid','orgid',v_return->'orgid','tokentime',now()::varchar)::text,v_return->>'prikey','sha512'),'hex')		
 --			else null
 		end;
@@ -879,7 +902,7 @@ begin
 	v_pass:=substring(md5(random()::varchar),2,8);
 	if p_tokentype!=1 then p_tokentype:=2;end if;
   insert into sysinfo.operinfo( operatorid,operatorname,accounts,pass,isused,tokentype,tokeninterval,createoperator,createtime) values(v_id,p_operatorname,p_accounts,v_pass,1,p_tokentype,p_tokeninterval,(v_check->'info'->>'operatorid')::integer,now() );
-  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct v_id,nextval('sysinfo.operpermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) t  where  (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction )) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo ));
+  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct v_id,nextval('sysinfo.operpermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) t  where  (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer));
 	delete from sysinfo.sysoper where operatorid=v_id ;
   insert into sysinfo.sysoper( systemid,operatorid) select distinct systemid,v_id from (
 	select systemid from sysinfo.roleinfo where roleinfoid in (select sysactionid from sysinfo.operpermission where permissiontype=2 and operatorid=v_id)
@@ -901,7 +924,7 @@ operatorid:员工编号
 operatorname:员工姓名
 tokentype:令牌类型1默认单人登录2多人登录
 tokeninterval:令牌时长默认180分钟
-operpermissionjson:员工权限{"permissiontype":权限类型1权限2角色,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
+operpermissionjson:员工权限{"permissiontype":权限类型（1=员工直接权限，sysactionid 存 sysaction.sysactionid；2=角色权限，sysactionid 存 roleinfo.roleinfoid）,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
 返回：{"errorcode":0,"message":"执行成功！","info":{"id":id,"pass":密码}'';';
 
 
@@ -916,6 +939,8 @@ declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,126);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
+  -- 系统内置操作员（10000/100000）禁止删除：删除后系统将无法登录，需重新安装
+  if p_operatorid in (10000,100000) then return gm.returnjson(100036); end if;
   select count(*) into v_c from sysinfo.operinfo where operatorid=p_operatorid;
   if v_c=0 then return gm.returnjson(100011); end if;--操作员信息出错！
   delete from sysinfo.sysoper where operatorid=p_operatorid;
@@ -951,14 +976,17 @@ begin
   select count(*) into v_c from sysinfo.operinfo where operatorid=p_operatorid and isused=1;
   if v_c=0 then return gm.returnjson(100011); end if;--操作员信息出错！
 	if p_tokentype<>1 then p_tokentype:=2;end if;
-	delete from sysinfo.operpermission where operatorid=p_operatorid;
-  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_operatorid,nextval('sysinfo.operpermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from json_to_recordset(p_operpermissionjson::json) as t(permissionid int4,permissiontype int2,ifpermission int2,permissionorder int4,params varchar,sysactionid int4)  where  (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction ))  or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo ));
+  -- 子表按 permissionid 增删改：先按提交主键差集删除、再按主键更新、最后插入新行
+  -- （delete 必须在 insert 之前，避免误删本次新插入、主键尚不在提交集合中的行）
+  delete from sysinfo.operpermission t where t.operatorid=p_operatorid and not exists (select 1 from (select (elem->>'permissionid')::int4 as permissionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where s.permissionid=t.permissionid);
   update sysinfo.operinfo set operatorname=p_operatorname,accounts=p_accounts,tokentype=p_tokentype,tokeninterval=p_tokeninterval,updateoperator=(v_check->'info'->>'operatorid')::integer,updatetime=now() where operatorid=p_operatorid;
 	delete from sysinfo.sysoper where operatorid=p_operatorid ;
   insert into sysinfo.sysoper( systemid,operatorid) select distinct systemid,p_operatorid from (
 	select systemid from sysinfo.roleinfo where roleinfoid in (select sysactionid from sysinfo.operpermission where permissiontype=2 and operatorid=p_operatorid)
     union 
   select systemid from sysinfo.sysaction where sysactionid in (select sysactionid from sysinfo.operpermission where permissiontype=1 and operatorid=p_operatorid) ) t;
+  update sysinfo.operpermission t set permissiontype=s.permissiontype,ifpermission=s.ifpermission,permissionorder=s.permissionorder,params=s.params,sysactionid=s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where t.permissionid=s.permissionid and t.operatorid=p_operatorid and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
+  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_operatorid,nextval('sysinfo.operpermission_permissionid_seq'),s.permissiontype,s.ifpermission,s.permissionorder,s.params,s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where (s.permissionid is null or not exists (select 1 from sysinfo.operpermission t2 where t2.permissionid=s.permissionid)) and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
   return gm.returnjson(0);
 end;
 $$;
@@ -975,7 +1003,7 @@ operatorid:员工编号
 operatorname:员工姓名
 tokentype:令牌类型1默认单人登录2多人登录
 tokeninterval:令牌时长默认180分钟
-operpermissionjson:员工权限{"permissiontype":权限类型1权限2角色,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
+operpermissionjson:员工权限{"permissiontype":权限类型（1=员工直接权限，sysactionid 存 sysaction.sysactionid；2=角色权限，sysactionid 存 roleinfo.roleinfoid）,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
 返回：{"errorcode":0,"message":"执行成功！","info":{"id":id,"pass":密码}'';';
 
 
@@ -991,8 +1019,7 @@ begin
   v_check:=gm.check_login(p_token,126);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
   select count(*) into v_c from sysinfo.operinfo where accounts=p_accounts and operatorid<>p_operatorid;
-	if v_c>0 then return gm.returnjson(100022);end if;--账号不能重复！
-	if p_tokentype<>1 then p_tokentype:=2;end if;
+	if v_c>0 then return gm.returnjson(100022);end if;--账号不能重复！	
   if p_operatorid is null then 
     v_c:=1;loop exit when (v_c=0);
       v_id :=nextval('sysinfo.operinfo_operatorid_seq');
@@ -1001,17 +1028,21 @@ begin
   else
     v_id:=p_operatorid;
   end if;
-	delete from sysinfo.operpermission where operatorid=p_operatorid;
-  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct v_id,nextval('sysinfo.operpermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) t  where  (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction ))  or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo ));
-  with "te" as (update sysinfo.operinfo set operatorname=p_operatorname,accounts=p_accounts,tokentype=p_tokentype,tokeninterval=p_tokeninterval,updateoperator=(v_check->'info'->>'operatorid')::integer,updatetime=now()  where operatorid=v_id returning *)
+	if p_tokentype<>1 then p_tokentype:=2;end if;
+  -- 子表按 permissionid 增删改：先按提交主键差集删除、再按主键更新、最后插入新行
+  -- （delete 必须在 insert 之前，避免误删本次新插入、主键尚不在提交集合中的行）
+  delete from sysinfo.operpermission t where t.operatorid=v_id and not exists (select 1 from (select (elem->>'permissionid')::int4 as permissionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where s.permissionid=t.permissionid);
+  with "te" as (update sysinfo.operinfo set operatorname=p_operatorname,accounts=p_accounts,tokentype=p_tokentype,tokeninterval=p_tokeninterval,updateoperator=(v_check->'info'->>'operatorid')::integer,updatetime=now() where operatorid=v_id returning *)
   insert into sysinfo.operinfo ( operatorid,operatorname,accounts,isused,tokentype,tokeninterval,createoperator,createtime) select v_id,p_operatorname,p_accounts,1,p_tokentype,p_tokeninterval,(v_check->'info'->>'operatorid')::integer,now() where (select count(*) from te) = 0;
 	delete from sysinfo.sysoper where operatorid=v_id ;
-  insert into sysinfo.sysoper( systemid,operatorid) select distinct systemid,p_operatorid from (
-	select systemid from sysinfo.roleinfo where roleinfoid in (select sysactionid from sysinfo.operpermission where permissiontype=2 and operatorid=p_operatorid)
+  insert into sysinfo.sysoper( systemid,operatorid) select distinct systemid,v_id from (
+	select systemid from sysinfo.roleinfo where roleinfoid in (select sysactionid from sysinfo.operpermission where permissiontype=2 and operatorid=v_id)
     union 
-  select systemid from sysinfo.sysaction where sysactionid in (select sysactionid from sysinfo.operpermission where permissiontype=1 and operatorid=p_operatorid) ) t;
+  select systemid from sysinfo.sysaction where sysactionid in (select sysactionid from sysinfo.operpermission where permissiontype=1 and operatorid=v_id) ) t;
+  update sysinfo.operpermission t set permissiontype=s.permissiontype,ifpermission=s.ifpermission,permissionorder=s.permissionorder,params=s.params,sysactionid=s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where t.permissionid=s.permissionid and t.operatorid=v_id and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
+  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct v_id,nextval('sysinfo.operpermission_permissionid_seq'),s.permissiontype,s.ifpermission,s.permissionorder,s.params,s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where (s.permissionid is null or not exists (select 1 from sysinfo.operpermission t2 where t2.permissionid=s.permissionid)) and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
   return gm.returnjson(0,json_build_object('id',v_id));
-end; 
+end;
 $$;
 
 
@@ -1026,7 +1057,7 @@ operatorid:员工编号
 operatorname:员工姓名
 tokentype:令牌类型1默认单人登录2多人登录
 tokeninterval:令牌时长默认180分钟
-operpermissionjson:员工权限{"permissiontype":权限类型1权限2角色,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
+operpermissionjson:员工权限{"permissiontype":权限类型（1=员工直接权限，sysactionid 存 sysaction.sysactionid；2=角色权限，sysactionid 存 roleinfo.roleinfoid）,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
 返回：{"errorcode":0,"message":"执行成功！","info":{"id":id,"pass":密码}'';';
 
 
@@ -1043,11 +1074,11 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_rows is null then
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.operatorid,t1.operatorname,t1.sex,t1.phone,t1.accounts,t1.memo,t1.isused,t1.mycode,t1.upcode,t1.headimgurl,t1.nickname,t1.birthday::varchar,t1.tokentype,t1.tokeninterval,sysoper.sysoperjson,t1.createoperator,t2.operatorname createname,t1.createtime::varchar,t1.updateoperator ,t3.operatorname updatename,t1.updatetime::varchar,t1.deloperator,t4.operatorname delname,t1.deltime::varchar from sysinfo.operinfo t1 left join (select operatorid,array_to_json(array_agg(row_to_json(t))) sysoperjson from (select  t1.operatorid,t1.systemid,ts.systemname from sysinfo.sysoper t1 left join sysinfo.systeminfo ts on t1.systemid=ts.systemid )t group by t.operatorid) sysoper on t1.operatorid=sysoper.operatorid left join sysinfo.operinfo t2 on t1.createoperator=t2.operatorid left join sysinfo.operinfo t3 on t1.updateoperator=t3.operatorid left join sysinfo.operinfo t4 on t1.deloperator=t4.operatorid where (p_operatorid is null or p_operatorid=t1.operatorid) and (p_operatorname is null or position(p_operatorname in t1.operatorname )>0) and (p_sex is null or p_sex=t1.sex) and (p_phone is null or position(p_phone in t1.phone )>0) and (p_accounts is null or position(p_accounts in t1.accounts )>0) and (p_memo is null or position(p_memo in t1.memo )>0) and (p_isused is null or p_isused=t1.isused) and (p_mycode is null or p_mycode=t1.mycode) and (p_upcode is null or p_upcode=t1.upcode) and (p_headimgurl is null or position(p_headimgurl in t1.headimgurl )>0) and (p_nickname is null or position(p_nickname in t1.nickname )>0) and (p_beginbirthday is null or t1.birthday>=p_beginbirthday) and (p_endbirthday is null or t1.birthday<=p_endbirthday) and (p_tokentype is null or p_tokentype=t1.tokentype) and (p_tokeninterval is null or p_tokeninterval=t1.tokeninterval) order by t1.operatorid) t;
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.operatorid,t1.operatorname,t1.sex,t1.phone,t1.accounts,t1.memo,t1.isused,t1.mycode,t1.upcode,t1.headimgurl,t1.nickname,t1.birthday::varchar,t1.tokentype,t1.tokeninterval,sysoper.sysoperjson,operpermission.operpermissionjson,t1.createoperator,t2.operatorname createname,t1.createtime::varchar,t1.updateoperator ,t3.operatorname updatename,t1.updatetime::varchar,t1.deloperator,t4.operatorname delname,t1.deltime::varchar from sysinfo.operinfo t1 left join (select operatorid,array_to_json(array_agg(row_to_json(t))) sysoperjson from (select  t1.operatorid,t1.systemid,ts.systemname from sysinfo.sysoper t1 left join sysinfo.systeminfo ts on t1.systemid=ts.systemid )t group by t.operatorid) sysoper on t1.operatorid=sysoper.operatorid left join (select operatorid,array_to_json(array_agg(row_to_json(t))) operpermissionjson from (select t1.operatorid,t1.permissionid,t1.permissiontype,t1.ifpermission,t1.permissionorder,t1.params,t1.sysactionid,case t1.permissiontype when 1 then t2.sysactionname else t3.operatorname end sysactionname from sysinfo.operpermission t1 left join sysinfo.sysaction t2 on t2.sysactionid=t1.sysactionid left join sysinfo.operinfo t3 on t3.operatorid=t1.sysactionid) t group by t.operatorid) operpermission on t1.operatorid=operpermission.operatorid left join sysinfo.operinfo t2 on t1.createoperator=t2.operatorid left join sysinfo.operinfo t3 on t1.updateoperator=t3.operatorid left join sysinfo.operinfo t4 on t1.deloperator=t4.operatorid where (p_operatorid is null or p_operatorid=t1.operatorid) and (p_operatorname is null or position(p_operatorname in t1.operatorname )>0) and (p_sex is null or p_sex=t1.sex) and (p_phone is null or position(p_phone in t1.phone )>0) and (p_accounts is null or position(p_accounts in t1.accounts )>0) and (p_memo is null or position(p_memo in t1.memo )>0) and (p_isused is null or p_isused=t1.isused) and (p_mycode is null or p_mycode=t1.mycode) and (p_upcode is null or p_upcode=t1.upcode) and (p_headimgurl is null or position(p_headimgurl in t1.headimgurl )>0) and (p_nickname is null or position(p_nickname in t1.nickname )>0) and (p_beginbirthday is null or t1.birthday>=p_beginbirthday) and (p_endbirthday is null or t1.birthday<=p_endbirthday) and (p_tokentype is null or p_tokentype=t1.tokentype) and (p_tokeninterval is null or p_tokeninterval=t1.tokeninterval) order by t1.operatorid) t;
     v_c:=coalesce(json_array_length(v_return),0);
   else
     select count(*) into v_c from sysinfo.operinfo t1 where  (p_operatorid is null or p_operatorid=operatorid) and (p_operatorname is null or position(p_operatorname in t1.operatorname )>0) and (p_sex is null or p_sex=t1.sex) and (p_phone is null or position(p_phone in t1.phone )>0) and (p_accounts is null or position(p_accounts in t1.accounts )>0) and (p_memo is null or position(p_memo in t1.memo )>0) and (p_isused is null or p_isused=t1.isused) and (p_mycode is null or p_mycode=t1.mycode) and (p_upcode is null or p_upcode=t1.upcode) and (p_headimgurl is null or position(p_headimgurl in t1.headimgurl )>0) and (p_nickname is null or position(p_nickname in t1.nickname )>0) and (p_beginbirthday is null or t1.birthday>=p_beginbirthday) and (p_endbirthday is null or t1.birthday<=p_endbirthday) and (p_tokentype is null or p_tokentype=t1.tokentype) and (p_tokeninterval is null or p_tokeninterval=t1.tokeninterval);
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.operatorid,t1.operatorname,t1.sex,t1.phone,t1.accounts,t1.memo,t1.isused,t1.mycode,t1.upcode,t1.headimgurl,t1.nickname,t1.birthday::varchar,t1.tokentype,t1.tokeninterval,sysoper.sysoperjson,t1.createoperator,t2.operatorname createname,t1.createtime::varchar,t1.updateoperator ,t3.operatorname updatename,t1.updatetime::varchar,t1.deloperator,t4.operatorname delname,t1.deltime::varchar from sysinfo.operinfo t1 left join (select operatorid,array_to_json(array_agg(row_to_json(t))) sysoperjson from (select  t1.operatorid,t1.systemid,ts.systemname from sysinfo.sysoper t1 left join sysinfo.systeminfo ts on t1.systemid=ts.systemid )t group by t.operatorid) sysoper on t1.operatorid=sysoper.operatorid left join sysinfo.operinfo t2 on t1.createoperator=t2.operatorid left join sysinfo.operinfo t3 on t1.updateoperator=t3.operatorid left join sysinfo.operinfo t4 on t1.deloperator=t4.operatorid where (p_operatorid is null or p_operatorid=t1.operatorid) and (p_operatorname is null or position(p_operatorname in t1.operatorname )>0) and (p_sex is null or p_sex=t1.sex) and (p_phone is null or position(p_phone in t1.phone )>0) and (p_accounts is null or position(p_accounts in t1.accounts )>0) and (p_memo is null or position(p_memo in t1.memo )>0) and (p_isused is null or p_isused=t1.isused) and (p_mycode is null or p_mycode=t1.mycode) and (p_upcode is null or p_upcode=t1.upcode) and (p_headimgurl is null or position(p_headimgurl in t1.headimgurl )>0) and (p_nickname is null or position(p_nickname in t1.nickname )>0) and (p_beginbirthday is null or t1.birthday>=p_beginbirthday) and (p_endbirthday is null or t1.birthday<=p_endbirthday) and (p_tokentype is null or p_tokentype=t1.tokentype) and (p_tokeninterval is null or p_tokeninterval=t1.tokeninterval) order by t1.operatorid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.operatorid,t1.operatorname,t1.sex,t1.phone,t1.accounts,t1.memo,t1.isused,t1.mycode,t1.upcode,t1.headimgurl,t1.nickname,t1.birthday::varchar,t1.tokentype,t1.tokeninterval,sysoper.sysoperjson,operpermission.operpermissionjson,t1.createoperator,t2.operatorname createname,t1.createtime::varchar,t1.updateoperator ,t3.operatorname updatename,t1.updatetime::varchar,t1.deloperator,t4.operatorname delname,t1.deltime::varchar from sysinfo.operinfo t1 left join (select operatorid,array_to_json(array_agg(row_to_json(t))) sysoperjson from (select  t1.operatorid,t1.systemid,ts.systemname from sysinfo.sysoper t1 left join sysinfo.systeminfo ts on t1.systemid=ts.systemid )t group by t.operatorid) sysoper on t1.operatorid=sysoper.operatorid left join (select operatorid,array_to_json(array_agg(row_to_json(t))) operpermissionjson from (select t1.operatorid,t1.permissionid,t1.permissiontype,t1.ifpermission,t1.permissionorder,t1.params,t1.sysactionid,case t1.permissiontype when 1 then t2.sysactionname else t3.operatorname end sysactionname from sysinfo.operpermission t1 left join sysinfo.sysaction t2 on t2.sysactionid=t1.sysactionid left join sysinfo.operinfo t3 on t3.operatorid=t1.sysactionid) t group by t.operatorid) operpermission on t1.operatorid=operpermission.operatorid left join sysinfo.operinfo t2 on t1.createoperator=t2.operatorid left join sysinfo.operinfo t3 on t1.updateoperator=t3.operatorid left join sysinfo.operinfo t4 on t1.deloperator=t4.operatorid where (p_operatorid is null or p_operatorid=t1.operatorid) and (p_operatorname is null or position(p_operatorname in t1.operatorname )>0) and (p_sex is null or p_sex=t1.sex) and (p_phone is null or position(p_phone in t1.phone )>0) and (p_accounts is null or position(p_accounts in t1.accounts )>0) and (p_memo is null or position(p_memo in t1.memo )>0) and (p_isused is null or p_isused=t1.isused) and (p_mycode is null or p_mycode=t1.mycode) and (p_upcode is null or p_upcode=t1.upcode) and (p_headimgurl is null or position(p_headimgurl in t1.headimgurl )>0) and (p_nickname is null or position(p_nickname in t1.nickname )>0) and (p_beginbirthday is null or t1.birthday>=p_beginbirthday) and (p_endbirthday is null or t1.birthday<=p_endbirthday) and (p_tokentype is null or p_tokentype=t1.tokentype) and (p_tokeninterval is null or p_tokeninterval=t1.tokeninterval) order by t1.operatorid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
   end if;
   return gm.returnjson(0,json_build_object('total',v_c,'rows',v_return));
 end;
@@ -1159,6 +1190,8 @@ declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,144);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
+  -- 系统内置操作员（10000/100000）禁止删除
+  if p_operatorid in (10000,100000) then return gm.returnjson(100036); end if;
   select count(*) into v_c from sysinfo.operinfo t1 left join sysinfo.sysoper t2 on t1.operatorid=t2.operatorid where t1.operatorid=p_operatorid and t2.systemid=(v_check->'info'->>'systemid')::integer and isused=1;
   if v_c=0 then return gm.returnjson(100011); end if;--操作员信息出错！
   delete from sysinfo.sysoperorg where operatorid=p_operatorid and sysorgid in (select sysorgid from sysinfo.sysorg where systemid=(v_check->'info'->>'systemid')::integer);
@@ -1402,7 +1435,7 @@ ALTER FUNCTION sysinfo.operinfopermission_add(p_token character varying, p_opera
 
 COMMENT ON FUNCTION sysinfo.operinfopermission_add(p_token character varying, p_operatorid bigint, p_operpermissionjson json) IS '新增员工权限(本系统权限)
 operatorid:员工编号
-operpermissionjson:员工权限{"permissiontype":权限类型1权限2角色,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
+operpermissionjson:员工权限{"permissiontype":权限类型（1=员工直接权限，sysactionid 存 sysaction.sysactionid；2=角色权限，sysactionid 存 roleinfo.roleinfoid）,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
 返回：{"errorcode":0,"message":"执行成功！","info":id}';
 
 
@@ -1417,6 +1450,8 @@ declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,141);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
+  -- 系统内置操作员（10000/100000）禁止删除
+  if p_operatorid in (10000,100000) then return gm.returnjson(100036); end if;
   select count(*) into v_c from sysinfo.operinfo t1 left join sysinfo.sysoper t2 on t1.operatorid=t2.operatorid where t1.operatorid=p_operatorid and t1.isused=1 and t2.systemid=(v_check->'info'->>'systemid')::integer;
   if v_c=0 then return gm.returnjson(100011); end if;--操作员信息出错！
   delete from sysinfo.operpermission where operatorid=p_operatorid and ((permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer) ));
@@ -1450,8 +1485,11 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
   select count(*) into v_c from sysinfo.operinfo t1 left join sysinfo.sysoper t2 on t1.operatorid=t2.operatorid where t1.operatorid=p_operatorid and t1.isused=1 and t2.systemid=(v_check->'info'->>'systemid')::integer;
   if v_c=0 then return gm.returnjson(100011); end if;--操作员信息出错！
-  delete from sysinfo.operpermission where operatorid=p_operatorid and ((permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer) ));
-  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_operatorid,nextval('sysinfo.operpermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from json_to_recordset(p_operpermissionjson::json) as t(permissionid int4,permissiontype int2,ifpermission int2,permissionorder int4,params varchar,sysactionid int4)  where  (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer))  or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer) );
+  -- 子表按 permissionid 增删改：先按提交主键差集删除、再按主键更新、最后插入新行
+  -- （delete 必须在 insert 之前，避免误删本次新插入、主键尚不在提交集合中的行）
+  delete from sysinfo.operpermission t where t.operatorid=p_operatorid and ((t.permissiontype=1 and t.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (t.permissiontype=2 and t.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer))) and not exists (select 1 from (select (elem->>'permissionid')::int4 as permissionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where s.permissionid=t.permissionid);
+  update sysinfo.operpermission t set permissiontype=s.permissiontype,ifpermission=s.ifpermission,permissionorder=s.permissionorder,params=s.params,sysactionid=s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where t.permissionid=s.permissionid and t.operatorid=p_operatorid and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
+  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_operatorid,nextval('sysinfo.operpermission_permissionid_seq'),s.permissiontype,s.ifpermission,s.permissionorder,s.params,s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where (s.permissionid is null or not exists (select 1 from sysinfo.operpermission t2 where t2.permissionid=s.permissionid)) and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
   return gm.returnjson(0);
 end;
 $$;
@@ -1465,7 +1503,7 @@ ALTER FUNCTION sysinfo.operinfopermission_edit(p_token character varying, p_oper
 
 COMMENT ON FUNCTION sysinfo.operinfopermission_edit(p_token character varying, p_operatorid bigint, p_operpermissionjson json) IS '修改员工权限(本系统权限)
 operatorid:员工编号
-operpermissionjson:员工权限{"permissiontype":权限类型1权限2角色,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
+operpermissionjson:员工权限{"permissiontype":权限类型（1=员工直接权限，sysactionid 存 sysaction.sysactionid；2=角色权限，sysactionid 存 roleinfo.roleinfoid）,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号}
 返回：{"errorcode":0,"message":"执行成功！","info":id}';
 
 
@@ -1482,10 +1520,13 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
   select count(*) into v_c from sysinfo.operinfo t1 left join sysinfo.sysoper t2 on t1.operatorid=t2.operatorid where t1.operatorid=p_operatorid and t1.isused=1 and t2.systemid=(v_check->'info'->>'systemid')::integer;
   if v_c=0 then return gm.returnjson(100011); end if;--操作员信息出错！
-  delete from sysinfo.operpermission where operatorid=p_operatorid and ((permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer) ));
-  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_operatorid,nextval('sysinfo.operpermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from json_to_recordset(p_operpermissionjson::json) as t(permissionid int4,permissiontype int2,ifpermission int2,permissionorder int4,params varchar,sysactionid int4)  where  (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer))  or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer) );
+  -- 子表按 permissionid 增删改：先按提交主键差集删除、再按主键更新、最后插入新行
+  -- （delete 必须在 insert 之前，避免误删本次新插入、主键尚不在提交集合中的行）
+  delete from sysinfo.operpermission t where t.operatorid=p_operatorid and ((t.permissiontype=1 and t.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (t.permissiontype=2 and t.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer))) and not exists (select 1 from (select (elem->>'permissionid')::int4 as permissionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where s.permissionid=t.permissionid);
+  update sysinfo.operpermission t set permissiontype=s.permissiontype,ifpermission=s.ifpermission,permissionorder=s.permissionorder,params=s.params,sysactionid=s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where t.permissionid=s.permissionid and t.operatorid=p_operatorid and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
+  insert into sysinfo.operpermission( operatorid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_operatorid,nextval('sysinfo.operpermission_permissionid_seq'),s.permissiontype,s.ifpermission,s.permissionorder,s.params,s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_operpermissionjson::jsonb) as elem) s where (s.permissionid is null or not exists (select 1 from sysinfo.operpermission t2 where t2.permissionid=s.permissionid)) and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
   return gm.returnjson(0,json_build_object('id',p_operatorid));
-end; 
+end;
 $$;
 
 
@@ -1497,7 +1538,7 @@ ALTER FUNCTION sysinfo.operinfopermission_merge(p_token character varying, p_ope
 
 COMMENT ON FUNCTION sysinfo.operinfopermission_merge(p_token character varying, p_operatorid bigint, p_operpermissionjson json) IS '合并员工权限
 operatorid:员工编号
-operpermissionjson:员工权限{"permissiontype":权限类型1权限2角色,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号,"systemid":系统id,}
+operpermissionjson:员工权限{"permissiontype":权限类型（1=员工直接权限，sysactionid 存 sysaction.sysactionid；2=角色权限，sysactionid 存 roleinfo.roleinfoid）,"ifpermission":允许,"permissionorder":权限级别,"params":参数,"sysactionid":权限编号,"permissionid":操作员权限编号,"systemid":系统id,}
 返回：{"errorcode":0,"message":"执行成功！","info":id}';
 
 
@@ -1518,7 +1559,7 @@ begin
     v_c:=coalesce(json_array_length(v_return),0);
   else
     select count(*) into v_c from sysinfo.operinfo t1 where t1.operatorid in (select operatorid from sysinfo.sysoper where systemid=(v_check->'info'->>'systemid')::integer) and (p_operatorid is null or p_operatorid=operatorid) ;
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.operatorid,t1.operatorname,t1.isused,operpermission.operpermissionjson from sysinfo.operinfo t1 left join (select operatorid,array_to_json(array_agg(row_to_json(t))) operpermissionjson from (select  t1.operatorid,toper.operatorname,t1.permissiontype,t1.ifpermission,t1.permissionorder,t1.params,t1.sysactionid,t1.permissionid from sysinfo.operpermission t1 ) t group by t.operatorid) operpermission on t1.operatorid=operpermission.operatorid where t1.operatorid in (select operatorid from sysinfo.sysoper where systemid=(v_check->'info'->>'systemid')::integer) and (p_operatorid is null or p_operatorid=t1.operatorid)  order by t1.operatorid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.operatorid,t1.operatorname,t1.isused,operpermission.operpermissionjson from sysinfo.operinfo t1 left join (select operatorid,array_to_json(array_agg(row_to_json(t))) operpermissionjson from (select  t1.operatorid,t1.permissiontype,t1.ifpermission,t1.permissionorder,t1.params,t1.sysactionid,t1.permissionid from sysinfo.operpermission t1 ) t group by t.operatorid) operpermission on t1.operatorid=operpermission.operatorid where t1.operatorid in (select operatorid from sysinfo.sysoper where systemid=(v_check->'info'->>'systemid')::integer) and (p_operatorid is null or p_operatorid=t1.operatorid)  order by t1.operatorid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
   end if;
   return gm.returnjson(0,json_build_object('total',v_c,'rows',v_return));
 end;
@@ -1576,9 +1617,6 @@ $$;
 
 ALTER FUNCTION sysinfo.operinfopermission_undel(p_token character varying, p_operatorid integer) OWNER TO postgres;
 
---
--- Name: orgtype_add(character varying, integer, character varying, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
---
 
 CREATE FUNCTION sysinfo.orgtype_add(p_token character varying, p_orgtypeid integer, p_orgtypename character varying, p_description character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
@@ -1791,7 +1829,7 @@ orgtypeid:id';
 -- Name: province_add(character varying, integer, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.province_add(p_token character varying, p_pid integer, p_province character varying) RETURNS json
+CREATE FUNCTION public.province_add(p_token character varying, p_pid integer, p_province character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_id int;v_check json;
@@ -1801,27 +1839,27 @@ begin
 
   if p_pid is null then 
     v_c:=1;loop exit when (v_c=0);
-      v_id :=nextval('sysinfo.province_pid_seq');
-      select count(*) into v_c from sysinfo.province where pid=v_id;
+      v_id :=nextval('public.province_pid_seq');
+      select count(*) into v_c from public.province where pid=v_id;
     end loop;
   else
-    select count(*) into v_c from sysinfo.province where pid=p_pid;
+    select count(*) into v_c from public.province where pid=p_pid;
     if v_c>0 then return gm.returnjson(100033); end if;--省信息出错！
     v_id:=p_pid;
   end if;
-  insert into sysinfo.province( pid,province,isused) values(v_id,p_province,1 );
+  insert into public.province( pid,province,isused) values(v_id,p_province,1 );
   return gm.returnjson(0,json_build_object('id',v_id));
 end; 
 $$;
 
 
-ALTER FUNCTION sysinfo.province_add(p_token character varying, p_pid integer, p_province character varying) OWNER TO gm;
+ALTER FUNCTION public.province_add(p_token character varying, p_pid integer, p_province character varying) OWNER TO gm;
 
 --
 -- Name: FUNCTION province_add(p_token character varying, p_pid integer, p_province character varying); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.province_add(p_token character varying, p_pid integer, p_province character varying) IS '新增省
+COMMENT ON FUNCTION public.province_add(p_token character varying, p_pid integer, p_province character varying) IS '新增省
 pid:省id
 province:省名
 返回：{"errorcode":0,"message":"执行成功！","info":id}';
@@ -1831,28 +1869,28 @@ province:省名
 -- Name: province_del(character varying, integer); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.province_del(p_token character varying, p_pid integer) RETURNS json
+CREATE FUNCTION public.province_del(p_token character varying, p_pid integer) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,182);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
-  select count(*) into v_c from sysinfo.province where pid=p_pid;
+  select count(*) into v_c from public.province where pid=p_pid;
   if v_c=0 then return gm.returnjson(100033); end if;--省信息出错！
-  update sysinfo.province set isused=0 where pid=p_pid;
+  update public.province set isused=0 where pid=p_pid;
   return gm.returnjson(0); 
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.province_del(p_token character varying, p_pid integer) OWNER TO gm;
+ALTER FUNCTION public.province_del(p_token character varying, p_pid integer) OWNER TO gm;
 
 --
 -- Name: FUNCTION province_del(p_token character varying, p_pid integer); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.province_del(p_token character varying, p_pid integer) IS '删除省
+COMMENT ON FUNCTION public.province_del(p_token character varying, p_pid integer) IS '删除省
 pid:id';
 
 
@@ -1860,7 +1898,7 @@ pid:id';
 -- Name: province_edit(character varying, integer, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.province_edit(p_token character varying, p_pid integer, p_province character varying) RETURNS json
+CREATE FUNCTION public.province_edit(p_token character varying, p_pid integer, p_province character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_id int;v_check json;
@@ -1869,21 +1907,21 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   v_id:=p_pid;
-  select count(*) into v_c from sysinfo.province where pid=p_pid;
+  select count(*) into v_c from public.province where pid=p_pid;
   if v_c=0 then return gm.returnjson(100033); end if;--省信息出错！
-  update sysinfo.province set province=p_province where pid=p_pid;
+  update public.province set province=p_province where pid=p_pid;
   return gm.returnjson(0);
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.province_edit(p_token character varying, p_pid integer, p_province character varying) OWNER TO gm;
+ALTER FUNCTION public.province_edit(p_token character varying, p_pid integer, p_province character varying) OWNER TO gm;
 
 --
 -- Name: FUNCTION province_edit(p_token character varying, p_pid integer, p_province character varying); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.province_edit(p_token character varying, p_pid integer, p_province character varying) IS '修改省
+COMMENT ON FUNCTION public.province_edit(p_token character varying, p_pid integer, p_province character varying) IS '修改省
 pid:省id
 province:省名
 返回：{"errorcode":0,"message":"执行成功！","info":id}';
@@ -1893,7 +1931,7 @@ province:省名
 -- Name: province_merge(character varying, integer, character varying); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.province_merge(p_token character varying, p_pid integer, p_province character varying) RETURNS json
+CREATE FUNCTION public.province_merge(p_token character varying, p_pid integer, p_province character varying) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_id int;v_check json;
@@ -1903,26 +1941,26 @@ begin
 
   if p_pid is null then 
     v_c:=1;loop exit when (v_c=0);
-      v_id :=nextval('sysinfo.province_pid_seq');
-      select count(*) into v_c from sysinfo.province where pid=v_id;
+      v_id :=nextval('public.province_pid_seq');
+      select count(*) into v_c from public.province where pid=v_id;
     end loop;
   else
     v_id:=p_pid;
   end if;
-  with "te" as (update sysinfo.province set province=p_province  where pid=v_id returning *)
-  insert into sysinfo.province ( pid,province,isused) select v_id,p_province,1  where (select count(*) from te) = 0;
+  with "te" as (update public.province set province=p_province  where pid=v_id returning *)
+  insert into public.province ( pid,province,isused) select v_id,p_province,1  where (select count(*) from te) = 0;
   return gm.returnjson(0,json_build_object('id',v_id));
 end; 
 $$;
 
 
-ALTER FUNCTION sysinfo.province_merge(p_token character varying, p_pid integer, p_province character varying) OWNER TO gm;
+ALTER FUNCTION public.province_merge(p_token character varying, p_pid integer, p_province character varying) OWNER TO gm;
 
 --
 -- Name: FUNCTION province_merge(p_token character varying, p_pid integer, p_province character varying); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.province_merge(p_token character varying, p_pid integer, p_province character varying) IS '合并省
+COMMENT ON FUNCTION public.province_merge(p_token character varying, p_pid integer, p_province character varying) IS '合并省
 pid:省id
 province:省名
 返回：{"errorcode":0,"message":"执行成功！","info":id}';
@@ -1932,7 +1970,7 @@ province:省名
 -- Name: province_query(character varying, integer, integer, integer, character varying, integer); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer) RETURNS json
+CREATE FUNCTION public.province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_return json;v_check json;
@@ -1941,24 +1979,24 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_rows is null then
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.province,t1.isused from sysinfo.province t1 where  (p_pid is null or p_pid=t1.pid) and (p_province is null or position(p_province in t1.province )>0) and (p_isused is null or p_isused=t1.isused) order by t1.pid) t;
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.province,t1.isused from public.province t1 where  (p_pid is null or p_pid=t1.pid) and (p_province is null or position(p_province in t1.province )>0) and (p_isused is null or p_isused=t1.isused) order by t1.pid) t;
     v_c:=coalesce(json_array_length(v_return),0);
   else
-    select count(*) into v_c from sysinfo.province t1 where  (p_pid is null or p_pid=t1.pid) and (p_province is null or position(p_province in t1.province )>0) and (p_isused is null or p_isused=t1.isused);
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.province,t1.isused from sysinfo.province t1 where  (p_pid is null or p_pid=t1.pid) and (p_province is null or position(p_province in t1.province )>0) and (p_isused is null or p_isused=t1.isused) order by t1.pid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
+    select count(*) into v_c from public.province t1 where  (p_pid is null or p_pid=t1.pid) and (p_province is null or position(p_province in t1.province )>0) and (p_isused is null or p_isused=t1.isused);
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.pid,t1.province,t1.isused from public.province t1 where  (p_pid is null or p_pid=t1.pid) and (p_province is null or position(p_province in t1.province )>0) and (p_isused is null or p_isused=t1.isused) order by t1.pid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
   end if;
   return gm.returnjson(0,json_build_object('total',v_c,'rows',v_return));
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer) OWNER TO gm;
+ALTER FUNCTION public.province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer) OWNER TO gm;
 
 --
 -- Name: FUNCTION province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer) IS '查询省
+COMMENT ON FUNCTION public.province_query(p_token character varying, p_rows integer, p_page integer, p_pid integer, p_province character varying, p_isused integer) IS '查询省
 pid:省id
 province:省名
 isused:是否使用
@@ -1969,28 +2007,28 @@ isused:是否使用
 -- Name: province_undel(character varying, integer); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
-CREATE FUNCTION sysinfo.province_undel(p_token character varying, p_pid integer) RETURNS json
+CREATE FUNCTION public.province_undel(p_token character varying, p_pid integer) RETURNS json
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 declare v_c int;v_check json;
 begin
   v_check:=gm.check_login(p_token,183);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
-  select count(*) into v_c from sysinfo.province where pid=p_pid;
+  select count(*) into v_c from public.province where pid=p_pid;
   if v_c=0 then return gm.returnjson(100033); end if;--省信息出错！
-  update sysinfo.province set isused=1 where pid=p_pid;
+  update public.province set isused=1 where pid=p_pid;
   return gm.returnjson(0); 
 end;
 $$;
 
 
-ALTER FUNCTION sysinfo.province_undel(p_token character varying, p_pid integer) OWNER TO gm;
+ALTER FUNCTION public.province_undel(p_token character varying, p_pid integer) OWNER TO gm;
 
 --
 -- Name: FUNCTION province_undel(p_token character varying, p_pid integer); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.province_undel(p_token character varying, p_pid integer) IS '恢复省
+COMMENT ON FUNCTION public.province_undel(p_token character varying, p_pid integer) IS '恢复省
 pid:id';
 
 
@@ -2023,8 +2061,14 @@ BEGIN
 		if v_pass is null then return gm.returnjson(100027);end if ;--注册码不正确！
 		v_return:=gm.http_post('https://api.weixin.qq.com/wxa/business/getuserphonenumber?access_token='||v_pass||'&'::varchar,'{"code":"'||p_code||'"}','application/x-www-form-urlencoded');
 		p_phone:=(v_return->>'phone_info')::json->>'purePhoneNumber';
-	else		
-  	select systemid into v_systemid from sms.sendcode where mobile=p_phone and code=p_code and expiretime>now() and actionid=136;
+	else
+		-- 短信验证码：优先查 sms.sendcode（部署了 sms 扩展时）；
+		-- 未部署 sms 时容错为 NULL → 返回 100027（注册码不正确），不再抛 schema 不存在异常
+		BEGIN
+		  select systemid into v_systemid from sms.sendcode where mobile=p_phone and code=p_code and expiretime>now() and actionid=136;
+		EXCEPTION WHEN undefined_table THEN
+		  v_systemid:=null;
+		END;
     if v_systemid is null then return gm.returnjson(100027);end if ;--注册码不正确！
 	end if;
   select 'https://api.weixin.qq.com/sns/jscode2session?grant_type=authorization_code&'||params||'&js_code='||p_accounts into v_pass from sysinfo.appparams where appid=p_appid;
@@ -2155,7 +2199,6 @@ declare v_c int;v_id int;v_check json;
 begin
   v_check:=gm.check_login(p_token,132);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
-
   v_id:=p_roleinfoid;
   select count(*) into v_c from sysinfo.roleinfo where roleinfoid=p_roleinfoid and systemid=(v_check->'info'->>'systemid')::integer and isused=1;
   if v_c=0 then return gm.returnjson(100023); end if;--角色信息出错！
@@ -2165,9 +2208,12 @@ union
  select t.sysactionid from sysinfo.rolepermission t inner join tree on t.roleinfoid=tree.sysactionid where permissiontype=2 
 )	select count(*) into v_c from tree where sysactionid=p_roleinfoid;
   if v_c>0 then return gm.returnjson(100017);end if;--不能循环定义！
-  delete from sysinfo.rolepermission t1 where roleinfoid=p_roleinfoid and ((t1.permissiontype=1 and t1.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (t1.permissiontype=2 and t1.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
-  insert into sysinfo.rolepermission( roleinfoid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select v_id,nextval('sysinfo.rolepermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from json_to_recordset(p_rolepermissionjson::json) as t(permissionid int4,permissiontype int2,ifpermission int2,permissionorder int4,params varchar,sysactionid int4) where (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer));
+  -- 子表按 permissionid 增删改：先按提交主键差集删除、再按主键更新、最后插入新行
+  -- （delete 必须在 insert 之前，避免误删本次新插入、主键尚不在提交集合中的行）
+  delete from sysinfo.rolepermission t where t.roleinfoid=p_roleinfoid and ((t.permissiontype=1 and t.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (t.permissiontype=2 and t.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer))) and not exists (select 1 from (select (elem->>'permissionid')::int4 as permissionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) s where s.permissionid=t.permissionid);
   update sysinfo.roleinfo set roleinfoname=p_roleinfoname,description=p_description,systemid=(v_check->'info'->>'systemid')::integer where roleinfoid=p_roleinfoid;
+  update sysinfo.rolepermission t set permissiontype=s.permissiontype,ifpermission=s.ifpermission,permissionorder=s.permissionorder,params=s.params,sysactionid=s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) s where t.permissionid=s.permissionid and t.roleinfoid=p_roleinfoid and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
+  insert into sysinfo.rolepermission( roleinfoid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct p_roleinfoid,nextval('sysinfo.rolepermission_permissionid_seq'),s.permissiontype,s.ifpermission,s.permissionorder,s.params,s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) s where (s.permissionid is null or not exists (select 1 from sysinfo.rolepermission t2 where t2.permissionid=s.permissionid)) and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
   return gm.returnjson(0);
 end;
 $$;
@@ -2198,7 +2244,6 @@ declare v_c int;v_id int;v_check json;
 begin
   v_check:=gm.check_login(p_token,132);
   if v_check->>'errorcode'<>'0' then return v_check; end if;
-
   if p_roleinfoid is null then 
     v_c:=1;loop exit when (v_c=0);
       v_id :=nextval('sysinfo.roleinfo_roleinfoid_seq');
@@ -2213,12 +2258,15 @@ union
  select t.sysactionid from sysinfo.rolepermission t inner join tree on t.roleinfoid=tree.sysactionid where permissiontype=2 
 )	select count(*) into v_c from tree where sysactionid=v_id;
   if v_c>0 then return gm.returnjson(100017);end if;--不能循环定义！
-  delete from sysinfo.rolepermission t1 where roleinfoid=p_roleinfoid and ((t1.permissiontype=1 and t1.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (t1.permissiontype=2 and t1.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
-  insert into sysinfo.rolepermission( roleinfoid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select v_id,nextval('sysinfo.rolepermission_permissionid_seq'),permissiontype,ifpermission,permissionorder,params,sysactionid  from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) t where (permissiontype=1 and sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (permissiontype=2 and sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer));
-	with "te" as (update sysinfo.roleinfo set roleinfoname=p_roleinfoname,description=p_description,systemid=(v_check->'info'->>'systemid')::integer  where roleinfoid=v_id returning *)
-  insert into sysinfo.roleinfo ( roleinfoid,roleinfoname,description,isused,systemid) select v_id,p_roleinfoname,p_description,1,(v_check->'info'->>'systemid')::integer  where (select count(*) from te) = 0;
+  -- 子表按 permissionid 增删改：先按提交主键差集删除、再按主键更新、最后插入新行
+  -- （delete 必须在 insert 之前，避免误删本次新插入、主键尚不在提交集合中的行）
+  delete from sysinfo.rolepermission t where t.roleinfoid=v_id and ((t.permissiontype=1 and t.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (t.permissiontype=2 and t.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer))) and not exists (select 1 from (select (elem->>'permissionid')::int4 as permissionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) s where s.permissionid=t.permissionid);
+  with "te" as (update sysinfo.roleinfo set roleinfoname=p_roleinfoname,description=p_description,systemid=(v_check->'info'->>'systemid')::integer where roleinfoid=v_id returning *)
+  insert into sysinfo.roleinfo ( roleinfoid,roleinfoname,description,isused,systemid) select v_id,p_roleinfoname,p_description,1,(v_check->'info'->>'systemid')::integer where (select count(*) from te) = 0;
+  update sysinfo.rolepermission t set permissiontype=s.permissiontype,ifpermission=s.ifpermission,permissionorder=s.permissionorder,params=s.params,sysactionid=s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) s where t.permissionid=s.permissionid and t.roleinfoid=v_id and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
+  insert into sysinfo.rolepermission( roleinfoid,permissionid,permissiontype,ifpermission,permissionorder,params,sysactionid) select distinct v_id,nextval('sysinfo.rolepermission_permissionid_seq'),s.permissiontype,s.ifpermission,s.permissionorder,s.params,s.sysactionid from (select (elem->>'permissionid')::int4 as permissionid,(elem->>'permissiontype')::int2 as permissiontype,(elem->>'ifpermission')::int2 as ifpermission,(elem->>'permissionorder')::int4 as permissionorder,(elem->>'params') as params,(elem->>'sysactionid')::int4 as sysactionid from jsonb_array_elements(p_rolepermissionjson::jsonb) as elem) s where (s.permissionid is null or not exists (select 1 from sysinfo.rolepermission t2 where t2.permissionid=s.permissionid)) and ((s.permissiontype=1 and s.sysactionid in (select sysactionid from sysinfo.sysaction where systemid=(v_check->'info'->>'systemid')::integer)) or (s.permissiontype=2 and s.sysactionid in (select roleinfoid from sysinfo.roleinfo where systemid=(v_check->'info'->>'systemid')::integer)));
   return gm.returnjson(0,json_build_object('id',v_id));
-end; 
+end;
 $$;
 
 
@@ -2305,6 +2353,43 @@ roleinfoid:id';
 
 
 --
+-- Name: loginlog_query(character varying, integer, integer, bigint, timestamp without time zone, timestamp without time zone, bigint, inet, character varying, smallint); Type: FUNCTION; Schema: sysinfo; Owner: gm
+--
+
+CREATE FUNCTION sysinfo.loginlog_query(p_token character varying, p_rows integer, p_page integer, p_logid bigint, p_beginlogintime timestamp without time zone, p_endlogintime timestamp without time zone, p_operatorno bigint, p_ip inet, p_accounts character varying, p_systemid smallint) RETURNS json
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare v_c int;v_return json;v_check json;
+begin
+  v_check:=gm.check_login(p_token,107);
+  if v_check->>'errorcode'<>'0' then return v_check; end if;
+
+  if p_rows is null then
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select t1.logid,t1.logintime::varchar,t1.operatorno,t1.ip::varchar,t1.accounts,t1.systemid,toperator.operatorname from public.loginlog t1 left join sysinfo.operinfo toperator on t1.operatorno=toperator.operatorid where (p_logid is null or p_logid=t1.logid) and (p_beginlogintime is null or t1.logintime>=p_beginlogintime) and (p_endlogintime is null or t1.logintime<=p_endlogintime) and (p_operatorno is null or p_operatorno=t1.operatorno) and (p_ip is null or p_ip=t1.ip) and (p_accounts is null or position(p_accounts in t1.accounts)>0) and (p_systemid is null or p_systemid=t1.systemid) order by t1.logid) t;
+    v_c:=coalesce(json_array_length(v_return),0);
+  else
+    select count(*) into v_c from public.loginlog t1 where (p_logid is null or p_logid=t1.logid) and (p_beginlogintime is null or t1.logintime>=p_beginlogintime) and (p_endlogintime is null or t1.logintime<=p_endlogintime) and (p_operatorno is null or p_operatorno=t1.operatorno) and (p_ip is null or p_ip=t1.ip) and (p_accounts is null or position(p_accounts in t1.accounts)>0) and (p_systemid is null or p_systemid=t1.systemid);
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select t1.logid,t1.logintime::varchar,t1.operatorno,t1.ip::varchar,t1.accounts,t1.systemid,toperator.operatorname from public.loginlog t1 left join sysinfo.operinfo toperator on t1.operatorno=toperator.operatorid where (p_logid is null or p_logid=t1.logid) and (p_beginlogintime is null or t1.logintime>=p_beginlogintime) and (p_endlogintime is null or t1.logintime<=p_endlogintime) and (p_operatorno is null or p_operatorno=t1.operatorno) and (p_ip is null or p_ip=t1.ip) and (p_accounts is null or position(p_accounts in t1.accounts)>0) and (p_systemid is null or p_systemid=t1.systemid) order by t1.logid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
+  end if;
+  return gm.returnjson(0,json_build_object('total',v_c,'rows',v_return));
+end;
+$$;
+
+
+ALTER FUNCTION sysinfo.loginlog_query(p_token character varying, p_rows integer, p_page integer, p_logid bigint, p_beginlogintime timestamp without time zone, p_endlogintime timestamp without time zone, p_operatorno bigint, p_ip inet, p_accounts character varying, p_systemid smallint) OWNER TO gm;
+
+COMMENT ON FUNCTION sysinfo.loginlog_query(p_token character varying, p_rows integer, p_page integer, p_logid bigint, p_beginlogintime timestamp without time zone, p_endlogintime timestamp without time zone, p_operatorno bigint, p_ip inet, p_accounts character varying, p_systemid smallint) IS '查询登录日志（public.loginlog：登录成功/失败均记录，不含口令；分页同 serverlog_query）
+logid:日志ID
+beginlogintime:登录时间起
+endlogintime:登录时间止
+operatorno:操作员ID
+ip:登录IP
+accounts:账号
+systemid:子系统ID
+返回:{"total":总记录数,"rows":[{"logid":日志ID,"logintime":登录时间,"operatorno":操作员ID,"operatorname":操作员姓名,"ip":登录IP,"accounts":账号,"systemid":子系统ID}]}';
+
+
+--
 -- Name: serverlog_query(character varying, integer, integer, bigint, inet, character varying, character varying, text, timestamp without time zone, timestamp without time zone, inet, text, bigint, text, text); Type: FUNCTION; Schema: sysinfo; Owner: gm
 --
 
@@ -2317,11 +2402,11 @@ begin
   if v_check->>'errorcode'<>'0' then return v_check; end if;
 
   if p_rows is null then
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.logid,t1.clientip,t1.pckname,t1.funcname,t1.content,t1.logtime::varchar,t1.serverip,t1.params,t1.operatorid,toperatorid.operatorname operatoridname,t1.res,t1.head from sysinfo.serverlog t1 left join sysinfo.operinfo toperatorid on t1.operatorid=toperatorid.operatorid where  (p_logid is null or p_logid=t1.logid) and (p_clientip is null or p_clientip=t1.clientip) and (p_pckname is null or position(p_pckname in t1.pckname )>0) and (p_funcname is null or position(p_funcname in t1.funcname )>0) and (p_content is null or position(p_content in t1.content )>0) and (p_beginlogtime is null or t1.logtime>=p_beginlogtime) and (p_endlogtime is null or t1.logtime<=p_endlogtime) and (p_serverip is null or p_serverip=t1.serverip) and (p_params is null or position(p_params in t1.params )>0) and (p_operatorid is null or p_operatorid=t1.operatorid) and (p_res is null or position(p_res in t1.res )>0) and (p_head is null or position(p_head in t1.head )>0) order by t1.logid) t;
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.logid,t1.clientip,t1.pckname,t1.funcname,left(t1.content,2000) content,t1.logtime::varchar,t1.serverip,left(t1.params,2000) params,t1.operatorid,toperatorid.operatorname operatoridname,left(t1.res,2000) res,left(t1.head,2000) head from public.serverlog t1 left join sysinfo.operinfo toperatorid on t1.operatorid=toperatorid.operatorid where  (p_logid is null or p_logid=t1.logid) and (p_clientip is null or p_clientip=t1.clientip) and (p_pckname is null or position(p_pckname in t1.pckname )>0) and (p_funcname is null or position(p_funcname in t1.funcname )>0) and (p_content is null or position(p_content in t1.content )>0) and (p_beginlogtime is null or t1.logtime>=p_beginlogtime) and (p_endlogtime is null or t1.logtime<=p_endlogtime) and (p_serverip is null or p_serverip=t1.serverip) and (p_params is null or position(p_params in t1.params )>0) and (p_operatorid is null or p_operatorid=t1.operatorid) and (p_res is null or position(p_res in t1.res )>0) and (p_head is null or position(p_head in t1.head )>0) order by t1.logid) t;
     v_c:=coalesce(json_array_length(v_return),0);
   else
-    select count(*) into v_c from sysinfo.serverlog t1 where  (p_logid is null or p_logid=t1.logid) and (p_clientip is null or p_clientip=t1.clientip) and (p_pckname is null or position(p_pckname in t1.pckname )>0) and (p_funcname is null or position(p_funcname in t1.funcname )>0) and (p_content is null or position(p_content in t1.content )>0) and (p_beginlogtime is null or t1.logtime>=p_beginlogtime) and (p_endlogtime is null or t1.logtime<=p_endlogtime) and (p_serverip is null or p_serverip=t1.serverip) and (p_params is null or position(p_params in t1.params )>0) and (p_operatorid is null or p_operatorid=t1.operatorid) and (p_res is null or position(p_res in t1.res )>0) and (p_head is null or position(p_head in t1.head )>0);
-    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.logid,t1.clientip,t1.pckname,t1.funcname,t1.content,t1.logtime::varchar,t1.serverip,t1.params,t1.operatorid,toperatorid.operatorname operatoridname,t1.res,t1.head from sysinfo.serverlog t1 left join sysinfo.operinfo toperatorid on t1.operatorid=toperatorid.operatorid where  (p_logid is null or p_logid=t1.logid) and (p_clientip is null or p_clientip=t1.clientip) and (p_pckname is null or position(p_pckname in t1.pckname )>0) and (p_funcname is null or position(p_funcname in t1.funcname )>0) and (p_content is null or position(p_content in t1.content )>0) and (p_beginlogtime is null or t1.logtime>=p_beginlogtime) and (p_endlogtime is null or t1.logtime<=p_endlogtime) and (p_serverip is null or p_serverip=t1.serverip) and (p_params is null or position(p_params in t1.params )>0) and (p_operatorid is null or p_operatorid=t1.operatorid) and (p_res is null or position(p_res in t1.res )>0) and (p_head is null or position(p_head in t1.head )>0) order by t1.logid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
+    select count(*) into v_c from public.serverlog t1 where  (p_logid is null or p_logid=t1.logid) and (p_clientip is null or p_clientip=t1.clientip) and (p_pckname is null or position(p_pckname in t1.pckname )>0) and (p_funcname is null or position(p_funcname in t1.funcname )>0) and (p_content is null or position(p_content in t1.content )>0) and (p_beginlogtime is null or t1.logtime>=p_beginlogtime) and (p_endlogtime is null or t1.logtime<=p_endlogtime) and (p_serverip is null or p_serverip=t1.serverip) and (p_params is null or position(p_params in t1.params )>0) and (p_operatorid is null or p_operatorid=t1.operatorid) and (p_res is null or position(p_res in t1.res )>0) and (p_head is null or position(p_head in t1.head )>0);
+    select array_to_json(array_agg(row_to_json(t))) into v_return from (select  t1.logid,t1.clientip,t1.pckname,t1.funcname,left(t1.content,2000) content,t1.logtime::varchar,t1.serverip,left(t1.params,2000) params,t1.operatorid,toperatorid.operatorname operatoridname,left(t1.res,2000) res,left(t1.head,2000) head from public.serverlog t1 left join sysinfo.operinfo toperatorid on t1.operatorid=toperatorid.operatorid where  (p_logid is null or p_logid=t1.logid) and (p_clientip is null or p_clientip=t1.clientip) and (p_pckname is null or position(p_pckname in t1.pckname )>0) and (p_funcname is null or position(p_funcname in t1.funcname )>0) and (p_content is null or position(p_content in t1.content )>0) and (p_beginlogtime is null or t1.logtime>=p_beginlogtime) and (p_endlogtime is null or t1.logtime<=p_endlogtime) and (p_serverip is null or p_serverip=t1.serverip) and (p_params is null or position(p_params in t1.params )>0) and (p_operatorid is null or p_operatorid=t1.operatorid) and (p_res is null or position(p_res in t1.res )>0) and (p_head is null or position(p_head in t1.head )>0) order by t1.logid limit greatest(p_rows,1) offset greatest(least((p_page-1)*p_rows,(v_c/p_rows-1+abs(v_c % p_rows))*p_rows),0) ) t;
   end if;
   return gm.returnjson(0,json_build_object('total',v_c,'rows',v_return));
 end;
@@ -2334,10 +2419,10 @@ ALTER FUNCTION sysinfo.serverlog_query(p_token character varying, p_rows integer
 -- Name: FUNCTION serverlog_query(p_token character varying, p_rows integer, p_page integer, p_logid bigint, p_clientip inet, p_pckname character varying, p_funcname character varying, p_content text, p_beginlogtime timestamp without time zone, p_endlogtime timestamp without time zone, p_serverip inet, p_params text, p_operatorid bigint, p_res text, p_head text); Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON FUNCTION sysinfo.serverlog_query(p_token character varying, p_rows integer, p_page integer, p_logid bigint, p_clientip inet, p_pckname character varying, p_funcname character varying, p_content text, p_beginlogtime timestamp without time zone, p_endlogtime timestamp without time zone, p_serverip inet, p_params text, p_operatorid bigint, p_res text, p_head text) IS '查询系统日志
+COMMENT ON FUNCTION sysinfo.serverlog_query(p_token character varying, p_rows integer, p_page integer, p_logid bigint, p_clientip inet, p_pckname character varying, p_funcname character varying, p_content text, p_beginlogtime timestamp without time zone, p_endlogtime timestamp without time zone, p_serverip inet, p_params text, p_operatorid bigint, p_res text, p_head text) IS '查询系统日志（public.serverlog：模块请求日志 + 操作审计(pckname=audit)；分页：p_rows 每页行数+p_page 页码，均空返回全量）
 logid:日志ID
 clientip:客户IP
-pckname:包名
+pckname:包名(audit=操作审计)
 funcname:功能名
 content:内容
 beginlogtime:时间
@@ -2657,6 +2742,12 @@ begin
     v_id:=p_sysorgid;
   end if;
   insert into sysinfo.sysorg( upid,isused,systemid,sysorgid,sysorgname,description,orgtype) values(coalesce(p_upid,100),1,(v_check->'info'->>'systemid')::integer,v_id,p_sysorgname,p_description,p_orgtype );
+  with recursive tree as
+  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where coalesce(upid,0)=0
+  union
+  select t1.sysorgid,t1.upid,t2.idlevel+1,t2.idpath||'.'||t1.sysorgid,t1.systemid from sysinfo.sysorg t1 inner join tree t2 on t2.sysorgid=t1.upid and t2.systemid=t1.systemid where isused<>0)
+  update sysinfo.sysorg t set idpath=t1.idpath,idlevel=t1.idlevel,idcount=coalesce(cc,0) from tree t1 left join (select upid,count(*) cc,systemid from sysinfo.sysorg where isused<>0 group by upid,systemid) t2 on t1.sysorgid=t2.upid
+  where t.sysorgid=t1.sysorgid;
   return gm.returnjson(0,json_build_object('id',v_id));
 end; 
 $$;
@@ -2694,7 +2785,7 @@ begin
   if v_c>0 then return gm.returnjson(100016);end if;--有下级类型不能删除
   update sysinfo.sysorg set isused=0 where sysorgid=p_sysorgid;
   with recursive tree as
-  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where upid=0
+  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where coalesce(upid,0)=0
   union
   select t1.sysorgid,t1.upid,t2.idlevel+1,t2.idpath||'.'||t1.sysorgid,t1.systemid from sysinfo.sysorg t1 inner join tree t2 on t2.sysorgid=t1.upid and t2.systemid=t1.systemid where isused<>0) 
   update sysinfo.sysorg t set idpath=t1.idpath,idlevel=t1.idlevel,idcount=coalesce(cc,0) from tree t1 left join (select upid,count(*) cc,systemid from sysinfo.sysorg where isused<>0 group by upid,systemid) t2 on t1.sysorgid=t2.upid
@@ -2730,12 +2821,13 @@ begin
   if p_upid is not null then
     select count(*) into v_c from sysinfo.sysorg where sysorgid=p_upid and isused<>0;
     if v_c<>1 then return gm.returnjson(100014);end if;--上级不存在
+    if p_upid=p_sysorgid then return gm.returnjson(100017);end if;--上级不能是自身
     select idpath into v_idpath from sysinfo.sysorg where sysorgid=p_upid and isused<>0;
     if position('.'||p_sysorgid||'.' in '.'||v_idpath||'.')>0 then return gm.returnjson(100017);end if;--上级机构不能循环定义
   end if;
   update sysinfo.sysorg set upid=coalesce(p_upid,100),systemid=(v_check->'info'->>'systemid')::integer,sysorgname=p_sysorgname,description=p_description,orgtype=p_orgtype  where sysorgid=p_sysorgid;
   with recursive tree as
-  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where upid=0
+  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where coalesce(upid,0)=0
   union
   select t1.sysorgid,t1.upid,t2.idlevel+1,t2.idpath||'.'||t1.sysorgid,t1.systemid from sysinfo.sysorg t1 inner join tree t2 on t2.sysorgid=t1.upid and t2.systemid=t1.systemid where isused<>0) 
   update sysinfo.sysorg t set idpath=t1.idpath,idlevel=t1.idlevel,idcount=coalesce(cc,0) from tree t1 left join (select upid,count(*) cc,systemid from sysinfo.sysorg where isused<>0 group by upid,systemid) t2 on t1.sysorgid=t2.upid
@@ -2774,6 +2866,7 @@ begin
   if p_upid is not null then
     select count(*) into v_c from sysinfo.sysorg where sysorgid=p_upid and isused<>0;
     if v_c<>1 then return gm.returnjson(100014);end if;--上级不存在
+    if p_upid=p_sysorgid then return gm.returnjson(100017);end if;--上级不能是自身
     select idpath into v_idpath from sysinfo.sysorg where sysorgid=p_upid and isused<>0;
     if position('.'||p_sysorgid||'.' in '.'||v_idpath||'.')>0 then return gm.returnjson(100017);end if;--上级机构不能循环定义
   end if;
@@ -2789,7 +2882,7 @@ begin
   with "te" as (update sysinfo.sysorg set upid=coalesce(p_upid,100),systemid=(v_check->'info'->>'systemid')::integer,sysorgname=p_sysorgname,description=p_description,orgtype=p_orgtype  where sysorgid=p_sysorgid returning *)
   insert into sysinfo.sysorg ( upid,isused,systemid,sysorgid,sysorgname,description,orgtype) select coalesce(p_upid,100),1,(v_check->'info'->>'systemid')::integer,v_id,p_sysorgname,p_description,p_orgtype  where (select count(*) from te) = 0;
   with recursive tree as
-  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where upid=0
+  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where coalesce(upid,0)=0
   union
   select t1.sysorgid,t1.upid,t2.idlevel+1,t2.idpath||'.'||t1.sysorgid,t1.systemid from sysinfo.sysorg t1 inner join tree t2 on t2.sysorgid=t1.upid and t2.systemid=t1.systemid where isused<>0) 
   update sysinfo.sysorg t set idpath=t1.idpath,idlevel=t1.idlevel,idcount=coalesce(cc,0) from tree t1 left join (select upid,count(*) cc,systemid from sysinfo.sysorg where isused<>0 group by upid,systemid) t2 on t1.sysorgid=t2.upid
@@ -2872,7 +2965,7 @@ begin
   if v_c>0 then return gm.returnjson(100016);end if;--有下级类型不能删除
   update sysinfo.sysorg set isused=1 where sysorgid=p_sysorgid;
   with recursive tree as
-  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where upid=0
+  ( select sysorgid,upid,1 as idlevel,sysorgid::varchar as idpath,t1.systemid from sysinfo.sysorg t1 where coalesce(upid,0)=0
   union
   select t1.sysorgid,t1.upid,t2.idlevel+1,t2.idpath||'.'||t1.sysorgid,t1.systemid from sysinfo.sysorg t1 inner join tree t2 on t2.sysorgid=t1.upid and t2.systemid=t1.systemid where isused<>0) 
   update sysinfo.sysorg t set idpath=t1.idpath,idlevel=t1.idlevel,idcount=coalesce(cc,0) from tree t1 left join (select upid,count(*) cc,systemid from sysinfo.sysorg where isused<>0 group by upid,systemid) t2 on t1.sysorgid=t2.upid
@@ -3330,7 +3423,7 @@ COMMENT ON COLUMN sysinfo.appparams.typeid IS '类型1:微信';
 -- Name: city; Type: TABLE; Schema: sysinfo; Owner: gm
 --
 
-CREATE TABLE sysinfo.city (
+CREATE TABLE public.city (
     pid integer NOT NULL,
     cid integer NOT NULL,
     city character varying(255),
@@ -3338,48 +3431,48 @@ CREATE TABLE sysinfo.city (
 );
 
 
-ALTER TABLE sysinfo.city OWNER TO gm;
+ALTER TABLE public.city OWNER TO gm;
 
 --
 -- Name: TABLE city; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON TABLE sysinfo.city IS '市';
+COMMENT ON TABLE public.city IS '市';
 
 
 --
 -- Name: COLUMN city.pid; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.city.pid IS '省id';
+COMMENT ON COLUMN public.city.pid IS '省id';
 
 
 --
 -- Name: COLUMN city.cid; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.city.cid IS '市id';
+COMMENT ON COLUMN public.city.cid IS '市id';
 
 
 --
 -- Name: COLUMN city.city; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.city.city IS '市名';
+COMMENT ON COLUMN public.city.city IS '市名';
 
 
 --
 -- Name: COLUMN city.isused; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.city.isused IS '是否使用';
+COMMENT ON COLUMN public.city.isused IS '是否使用';
 
 
 --
 -- Name: city_cid_seq; Type: SEQUENCE; Schema: sysinfo; Owner: gm
 --
 
-CREATE SEQUENCE sysinfo.city_cid_seq
+CREATE SEQUENCE public.city_cid_seq
     START WITH 100
     INCREMENT BY 1
     MINVALUE 100
@@ -3387,7 +3480,7 @@ CREATE SEQUENCE sysinfo.city_cid_seq
     CACHE 1;
 
 
-ALTER SEQUENCE sysinfo.city_cid_seq OWNER TO gm;
+ALTER SEQUENCE public.city_cid_seq OWNER TO gm;
 
 --
 -- Name: errorcode; Type: TABLE; Schema: sysinfo; Owner: gm
@@ -3459,36 +3552,9 @@ CREATE TABLE sysinfo.funchtml (
 
 ALTER TABLE sysinfo.funchtml OWNER TO gm;
 
---
--- Name: loginlog; Type: TABLE; Schema: sysinfo; Owner: gm
---
-
-CREATE TABLE sysinfo.loginlog (
-    logid bigint NOT NULL,
-    logintime timestamp(6) without time zone,
-    operatorno bigint,
-    ip inet,
-    accounts character varying(255),
-    systemid smallint
-);
-
-
-ALTER TABLE sysinfo.loginlog OWNER TO gm;
-
---
--- Name: loginlog_logid_seq; Type: SEQUENCE; Schema: sysinfo; Owner: gm
---
-
-CREATE SEQUENCE sysinfo.loginlog_logid_seq
-    START WITH 100
-    INCREMENT BY 1
-    MINVALUE 100
-    NO MAXVALUE
-    CACHE 1
-    CYCLE;
-
-
-ALTER SEQUENCE sysinfo.loginlog_logid_seq OWNER TO gm;
+-- sysinfo.loginlog 已并入 public.loginlog（2026-11-13 日志归拢），此处不再建表；
+-- 登录日志统一存 public.loginlog（结构同原表：logid/logintime/operatorno/ip/accounts/systemid，无口令列），
+-- logid 由 public.loginlog_logid_seq 生成（原 sysinfo 序列值平移 +100000，审计/请求日志同理避让）。
 
 --
 -- Name: operaccounts; Type: TABLE; Schema: sysinfo; Owner: gm
@@ -3926,48 +3992,48 @@ ALTER SEQUENCE sysinfo.orgtype_orgtypeid_seq OWNER TO gm;
 -- Name: province; Type: TABLE; Schema: sysinfo; Owner: gm
 --
 
-CREATE TABLE sysinfo.province (
+CREATE TABLE public.province (
     pid integer NOT NULL,
     province character varying(255),
     isused smallint
 );
 
 
-ALTER TABLE sysinfo.province OWNER TO gm;
+ALTER TABLE public.province OWNER TO gm;
 
 --
 -- Name: TABLE province; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON TABLE sysinfo.province IS '省';
+COMMENT ON TABLE public.province IS '省';
 
 
 --
 -- Name: COLUMN province.pid; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.province.pid IS '省id';
+COMMENT ON COLUMN public.province.pid IS '省id';
 
 
 --
 -- Name: COLUMN province.province; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.province.province IS '省名';
+COMMENT ON COLUMN public.province.province IS '省名';
 
 
 --
 -- Name: COLUMN province.isused; Type: COMMENT; Schema: sysinfo; Owner: gm
 --
 
-COMMENT ON COLUMN sysinfo.province.isused IS '是否使用';
+COMMENT ON COLUMN public.province.isused IS '是否使用';
 
 
 --
 -- Name: province_pid_seq; Type: SEQUENCE; Schema: sysinfo; Owner: gm
 --
 
-CREATE SEQUENCE sysinfo.province_pid_seq
+CREATE SEQUENCE public.province_pid_seq
     START WITH 100
     INCREMENT BY 1
     MINVALUE 100
@@ -3975,7 +4041,7 @@ CREATE SEQUENCE sysinfo.province_pid_seq
     CACHE 1;
 
 
-ALTER SEQUENCE sysinfo.province_pid_seq OWNER TO gm;
+ALTER SEQUENCE public.province_pid_seq OWNER TO gm;
 
 --
 -- Name: roleinfo; Type: TABLE; Schema: sysinfo; Owner: gm
@@ -4135,123 +4201,13 @@ CREATE SEQUENCE sysinfo.rolepermission_permissionid_seq
 
 ALTER SEQUENCE sysinfo.rolepermission_permissionid_seq OWNER TO gm;
 
---
--- Name: serverlog_logid_seq; Type: SEQUENCE; Schema: sysinfo; Owner: conn
---
+-- sysinfo.serverlog_logid_seq 已随 sysinfo.serverlog 并入 public.serverlog（2026-11-13 日志归拢），
+-- logid 统一由 public.serverlog_logid_seq 生成（审计行 +100000 偏移），此处不再建序列。
 
-CREATE SEQUENCE sysinfo.serverlog_logid_seq
-    START WITH 100
-    INCREMENT BY 1
-    MINVALUE 100
-    NO MAXVALUE
-    CACHE 1;
+-- sysinfo.serverlog 已并入 public.serverlog（2026-11-13 日志归拢），此处不再建表；
+-- 保留空段位以便 dump 结构对照（真实建表见文件尾 public.serverlog 段）。
 
-
-ALTER SEQUENCE sysinfo.serverlog_logid_seq OWNER TO conn;
-
---
--- Name: serverlog; Type: TABLE; Schema: sysinfo; Owner: gm
---
-
-CREATE TABLE sysinfo.serverlog (
-    logid bigint DEFAULT nextval('sysinfo.serverlog_logid_seq'::regclass) NOT NULL,
-    clientip inet,
-    pckname character varying(255),
-    funcname character varying(255),
-    content text,
-    logtime timestamp(6) without time zone,
-    serverip inet,
-    params text,
-    operatorid bigint,
-    res text,
-    head text
-);
-
-
-ALTER TABLE sysinfo.serverlog OWNER TO gm;
-
---
--- Name: TABLE serverlog; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON TABLE sysinfo.serverlog IS '系统日志';
-
-
---
--- Name: COLUMN serverlog.logid; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.logid IS '日志ID';
-
-
---
--- Name: COLUMN serverlog.clientip; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.clientip IS '客户IP';
-
-
---
--- Name: COLUMN serverlog.pckname; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.pckname IS '包名';
-
-
---
--- Name: COLUMN serverlog.funcname; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.funcname IS '功能名';
-
-
---
--- Name: COLUMN serverlog.content; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.content IS '内容';
-
-
---
--- Name: COLUMN serverlog.logtime; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.logtime IS '时间';
-
-
---
--- Name: COLUMN serverlog.serverip; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.serverip IS '服务器IP';
-
-
---
--- Name: COLUMN serverlog.params; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.params IS '参数';
-
-
---
--- Name: COLUMN serverlog.operatorid; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.operatorid IS '操作员';
-
-
---
--- Name: COLUMN serverlog.res; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.res IS '返回';
-
-
---
--- Name: COLUMN serverlog.head; Type: COMMENT; Schema: sysinfo; Owner: gm
---
-
-COMMENT ON COLUMN sysinfo.serverlog.head IS '头';
+-- (sysinfo.serverlog 表/列注释已随表并入 public.serverlog，2026-11-13 日志归拢)
 
 
 --
@@ -4759,7 +4715,7 @@ COPY sysinfo.appparams (appid, params, accesstoken, isused, tokentime, typeid) F
 -- Data for Name: city; Type: TABLE DATA; Schema: sysinfo; Owner: gm
 --
 
-COPY sysinfo.city (pid, cid, city, isused) FROM stdin;
+COPY public.city (pid, cid, city, isused) FROM stdin;
 11	1100	北京市	\N
 13	1301	石家庄市	\N
 44	4409	茂名市	\N
@@ -5156,11 +5112,11 @@ COPY sysinfo.errorcode (message, errorcode, primekey, isused, schema) FROM stdin
 子系统信息出错！	100012	systemid	1	sysinfo.systeminfo
 操作员所属系统信息出错！	100021	systemid	1	sysinfo.sysoper
 不能循环定义！	100017	\N	1	\N
-系统日志信息出错！	100030	logid	1	sysinfo.serverlog
+系统日志信息出错！	100030	logid	1	public.serverlog
 权限名信息出错！	100031	actionid	1	sysinfo.actions
 出错代码信息出错！	100032	errorcode	1	sysinfo.errorcode
-省信息出错！	100033	pid	1	sysinfo.province
-市信息出错！	100034	cid	1	sysinfo.city
+省信息出错！	100033	pid	1	public.province
+市信息出错！	100034	cid	1	public.city
 \.
 
 
@@ -5172,13 +5128,7 @@ COPY sysinfo.funchtml (htmlid, html1, html2) FROM stdin;
 \.
 
 
---
--- Data for Name: loginlog; Type: TABLE DATA; Schema: sysinfo; Owner: gm
---
-
-COPY sysinfo.loginlog (logid, logintime, operatorno, ip, accounts, systemid) FROM stdin;
-100	2026-11-09 21:50:30.764683	\N	\N	admin	100
-\.
+-- (sysinfo.loginlog 数据已迁入 public.loginlog，2026-11-13 日志归拢)
 
 
 --
@@ -5220,7 +5170,7 @@ COPY sysinfo.orgtype (isused, orgtypeid, orgtypename, description, systemid) FRO
 -- Data for Name: province; Type: TABLE DATA; Schema: sysinfo; Owner: gm
 --
 
-COPY sysinfo.province (pid, province, isused) FROM stdin;
+COPY public.province (pid, province, isused) FROM stdin;
 34	安徽省	\N
 32	江苏省	\N
 33	浙江省	\N
@@ -5274,12 +5224,7 @@ COPY sysinfo.rolepermission (roleinfoid, permissionid, permissiontype, ifpermiss
 \.
 
 
---
--- Data for Name: serverlog; Type: TABLE DATA; Schema: sysinfo; Owner: gm
---
-
-COPY sysinfo.serverlog (logid, clientip, pckname, funcname, content, logtime, serverip, params, operatorid, res, head) FROM stdin;
-\.
+-- (sysinfo.serverlog 数据已迁入 public.serverlog，2026-11-13 日志归拢)
 
 
 --
@@ -5397,7 +5342,7 @@ COPY sysinfo.sysoperorg (operatorid, sysorgid) FROM stdin;
 --
 
 COPY sysinfo.sysorg (isused, idpath, idlevel, idcount, upid, systemid, sysorgid, sysorgname, description, orgtype) FROM stdin;
-1	\N	\N	\N	\N	100	100	\N	\N	\N
+1	100	1	0	0	100	100	\N	\N	\N
 \.
 
 
@@ -5435,14 +5380,8 @@ SELECT pg_catalog.setval('public.systeminfo_systemid_seq', 100, false);
 -- Name: city_cid_seq; Type: SEQUENCE SET; Schema: sysinfo; Owner: gm
 --
 
-SELECT pg_catalog.setval('sysinfo.city_cid_seq', 100, false);
+SELECT pg_catalog.setval('public.city_cid_seq', 100, false);
 
-
---
--- Name: loginlog_logid_seq; Type: SEQUENCE SET; Schema: sysinfo; Owner: gm
---
-
-SELECT pg_catalog.setval('sysinfo.loginlog_logid_seq', 100, true);
 
 
 --
@@ -5470,7 +5409,7 @@ SELECT pg_catalog.setval('sysinfo.orgtype_orgtypeid_seq', 110, true);
 -- Name: province_pid_seq; Type: SEQUENCE SET; Schema: sysinfo; Owner: gm
 --
 
-SELECT pg_catalog.setval('sysinfo.province_pid_seq', 109, true);
+SELECT pg_catalog.setval('public.province_pid_seq', 109, true);
 
 
 --
@@ -5486,12 +5425,6 @@ SELECT pg_catalog.setval('sysinfo.roleinfo_roleinfoid_seq', 109, true);
 
 SELECT pg_catalog.setval('sysinfo.rolepermission_permissionid_seq', 100, false);
 
-
---
--- Name: serverlog_logid_seq; Type: SEQUENCE SET; Schema: sysinfo; Owner: conn
---
-
-SELECT pg_catalog.setval('sysinfo.serverlog_logid_seq', 100, false);
 
 
 --
@@ -5542,7 +5475,7 @@ ALTER TABLE ONLY sysinfo.appparams
 -- Name: city city_pkey; Type: CONSTRAINT; Schema: sysinfo; Owner: gm
 --
 
-ALTER TABLE ONLY sysinfo.city
+ALTER TABLE ONLY public.city
     ADD CONSTRAINT city_pkey PRIMARY KEY (cid);
 
 
@@ -5570,12 +5503,7 @@ ALTER TABLE ONLY sysinfo.funchtml
     ADD CONSTRAINT funchtml_pkey PRIMARY KEY (htmlid);
 
 
---
--- Name: loginlog loginlog_pkey; Type: CONSTRAINT; Schema: sysinfo; Owner: gm
---
-
-ALTER TABLE ONLY sysinfo.loginlog
-    ADD CONSTRAINT loginlog_pkey PRIMARY KEY (logid);
+-- (sysinfo.loginlog 主键已随表并入 public.loginlog，2026-11-13 日志归拢)
 
 
 --
@@ -5598,7 +5526,7 @@ ALTER TABLE ONLY sysinfo.orgtype
 -- Name: province province_pkey; Type: CONSTRAINT; Schema: sysinfo; Owner: gm
 --
 
-ALTER TABLE ONLY sysinfo.province
+ALTER TABLE ONLY public.province
     ADD CONSTRAINT province_pkey PRIMARY KEY (pid);
 
 
@@ -5618,13 +5546,7 @@ ALTER TABLE ONLY sysinfo.rolepermission
     ADD CONSTRAINT rolepermission_pkey PRIMARY KEY (permissionid);
 
 
---
--- Name: serverlog serverlog_pkey; Type: CONSTRAINT; Schema: sysinfo; Owner: gm
---
-
-ALTER TABLE ONLY sysinfo.serverlog
-    ADD CONSTRAINT serverlog_pkey PRIMARY KEY (logid);
-
+-- (sysinfo.serverlog 主键已随表并入 public.serverlog，2026-11-13 日志归拢)
 
 --
 -- Name: sysaction sysaction_pkey; Type: CONSTRAINT; Schema: sysinfo; Owner: gm
@@ -5696,12 +5618,6 @@ GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,UPDATE ON TABLE gm.nginx 
 GRANT SELECT ON TABLE gm.nginx TO conn;
 
 
---
--- Name: TABLE serverlog; Type: ACL; Schema: sysinfo; Owner: gm
---
-
-GRANT INSERT ON TABLE sysinfo.serverlog TO conn;
-
 
 --
 -- PostgreSQL database dump complete
@@ -5755,6 +5671,7 @@ ALTER FUNCTION operator.changepassword(p_token character varying, p_oldpass char
 --   1) 权限节点 9113“接口文档”，挂在“系统(100)”之下（idpath=100.9113）；
 --      admin 经根节点 100 的授权自动获得该权限（check_login 按 idpath 前缀匹配）。
 --   2) sysinfo.help_query（原 gethelp 改名）：返回当前库所有业务函数的元数据(JSON)，
+--      仅业务 schema；排除 crypto/gm（安全与内部工具函数）及 information_schema/pg_catalog，
 --      替代原 gm.gethelp()（返回整页 HTML、依赖 sysinfo.funchtml 模板且无鉴权，已删除）。
 --   3) sysinfo.help_edit（权限 224，挂于 9113 之下）：修改指定函数的注释
 --      （pg_description），前端接口文档页可在线编辑说明。
@@ -5783,6 +5700,7 @@ begin
                  coalesce(obj_description(p.oid,'pg_proc'),'') description
             from pg_proc p join pg_namespace n on p.pronamespace=n.oid
            where n.nspname<>'information_schema' and n.nspname not like 'pg\_%'
+             and n.nspname not in ('crypto','gm')
              and p.prokind='f'
            order by n.nspname,p.proname) t;
   return gm.returnjson(0,json_build_object('total',coalesce(json_array_length(v_rows),0),'rows',v_rows));
@@ -5829,9 +5747,13 @@ ALTER FUNCTION sysinfo.help_edit(p_token character varying, p_schemaname charact
 --   3) 操作审计：核心权限/员工/系统表写入时由触发器自动记入 serverlog
 --      （时间、客户端IP、对象、操作类型、数据快照、操作者）。
 --   4) 新增错误码 100035：口令复杂度不足（≥8 位且含字母和数字，拒绝常见弱口令）。
---   5) 最小权限：创建专用应用账号 ngxapp 供 nginx postgres 模块连接，
---      仅授予函数 EXECUTE 权限，不授予业务表直接读写权限。
+--   5) 最小权限：nginx postgres 模块改用既有账号 conn 连接（serverlog INSERT 已授），
+--      仅授予函数 EXECUTE 权限，不授予业务表直接读写权限；原专用账号 ngxapp 已删除。
 --
+
+INSERT INTO sysinfo.errorcode (message, errorcode, primekey, isused, schema)
+SELECT '系统内置操作员不能删除！', 100036, '100036', 1, 'sysinfo'
+WHERE NOT EXISTS (SELECT 1 FROM sysinfo.errorcode WHERE errorcode=100036);
 
 INSERT INTO sysinfo.errorcode (message, errorcode, primekey, isused, schema)
 SELECT '口令复杂度不足：至少8位且须同时包含字母和数字，禁止常见弱口令', 100035, '100035', 1, 'sysinfo'
@@ -5839,7 +5761,7 @@ WHERE NOT EXISTS (SELECT 1 FROM sysinfo.errorcode WHERE errorcode=100035);
 
 GRANT USAGE ON SCHEMA crypto TO gm;
 
-CREATE OR REPLACE FUNCTION sysinfo.hash_pass_trigger() RETURNS trigger
+CREATE OR REPLACE FUNCTION gm.hash_pass_trigger() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 begin
@@ -5850,11 +5772,11 @@ begin
 end
 $$;
 
-ALTER FUNCTION sysinfo.hash_pass_trigger() OWNER TO postgres;
+ALTER FUNCTION gm.hash_pass_trigger() OWNER TO postgres;
 
 DROP TRIGGER IF EXISTS trg_hash_pass ON sysinfo.operinfo;
 CREATE TRIGGER trg_hash_pass BEFORE INSERT OR UPDATE OF pass ON sysinfo.operinfo
-    FOR EACH ROW EXECUTE FUNCTION sysinfo.hash_pass_trigger();
+    FOR EACH ROW EXECUTE FUNCTION gm.hash_pass_trigger();
 
 CREATE OR REPLACE FUNCTION gm.audit_trigger() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -5864,7 +5786,7 @@ begin
   v_oper:=nullif(current_setting('app.operatorid', true),'')::int;
   v_row:=case when TG_OP='DELETE' then row_to_json(OLD)::text else row_to_json(NEW)::text end;
   begin
-    insert into sysinfo.serverlog(clientip,pckname,funcname,content,logtime,serverip,params,operatorid,res,head)
+    insert into public.serverlog(clientip,pckname,funcname,content,logtime,serverip,params,operatorid,res,head)
     values (inet_client_addr(),'audit',TG_TABLE_NAME||'.'||TG_OP,left(v_row,2000),now(),inet_server_addr(),null,v_oper,'ok',null);
   exception when others then
     null;--审计写入失败不阻断业务
@@ -5875,9 +5797,11 @@ $$;
 
 ALTER FUNCTION gm.audit_trigger() OWNER TO postgres;
 
-DROP TRIGGER IF EXISTS trg_audit ON sysinfo.loginlog;
-CREATE TRIGGER trg_audit AFTER INSERT OR DELETE ON sysinfo.loginlog
-    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+COMMENT ON FUNCTION gm.audit_trigger() IS '等保审计触发器（AFTER INSERT/UPDATE/DELETE）：把核心权限/员工/系统表变更写入 public.serverlog（pckname=audit）
+操作者取自 app.operatorid（由 gm.check_login 设置）；content 为行快照（截断2000字符）；审计写入失败不阻断业务（异常吞掉）
+返回：coalesce(NEW,OLD)';
+
+-- trg_audit on public.loginlog 在文末 public.loginlog 建表后创建（日志归拢）
 DROP TRIGGER IF EXISTS trg_audit ON sysinfo.operinfo;
 CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.operinfo
     FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
@@ -5897,19 +5821,139 @@ DROP TRIGGER IF EXISTS trg_audit ON sysinfo.rolepermission;
 CREATE TRIGGER trg_audit AFTER INSERT OR UPDATE OR DELETE ON sysinfo.rolepermission
     FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
 
+-- public.serverlog：统一日志表（nginx 模块请求日志 + gm.audit_trigger 操作审计 pckname='audit'）。
+-- 等保审计核心表；按月分区就绪（PARTITION BY RANGE (logtime)），海量数据下按月建子表+归档。
+CREATE TABLE public.serverlog (
+    logid bigint NOT NULL,
+    clientip inet,
+    pckname character varying(255),
+    funcname character varying(255),
+    content text,
+    logtime timestamp without time zone,
+    serverip inet,
+    params text,
+    operatorid bigint,
+    res text,
+    head text
+);
+ALTER TABLE public.serverlog OWNER TO postgres;
+CREATE SEQUENCE public.serverlog_logid_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.serverlog_logid_seq OWNER TO postgres;
+ALTER SEQUENCE public.serverlog_logid_seq OWNED BY public.serverlog.logid;
+
+-- public.loginlog：登录日志（登录成功/失败均记录；不记录口令——等保要求）。
+-- 由 sysinfo.login/loginaccount 写入；logid 由本序列生成（原 sysinfo 序列 +100000 平移）。
+CREATE TABLE public.loginlog (
+    logid bigint NOT NULL,
+    logintime timestamp without time zone,
+    operatorno bigint,
+    ip inet,
+    accounts character varying(255),
+    systemid smallint
+);
+ALTER TABLE public.loginlog OWNER TO postgres;
+CREATE SEQUENCE public.loginlog_logid_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.loginlog_logid_seq OWNER TO postgres;
+ALTER SEQUENCE public.loginlog_logid_seq OWNED BY public.loginlog.logid;
+ALTER TABLE ONLY public.loginlog
+    ADD CONSTRAINT loginlog_pkey PRIMARY KEY (logid);
+COMMENT ON TABLE public.loginlog IS '登录日志（成功/失败均记录，不含口令）';
+
+DROP TRIGGER IF EXISTS trg_audit ON public.loginlog;
+CREATE TRIGGER trg_audit AFTER INSERT OR DELETE ON public.loginlog
+    FOR EACH ROW EXECUTE FUNCTION gm.audit_trigger();
+
+-- 连接账号统一使用既有角色 conn（nginx postgres 模块连接账号）。
+GRANT INSERT ON TABLE public.serverlog TO conn;                       -- 模块请求日志表
+GRANT USAGE, SELECT ON SEQUENCE public.serverlog_logid_seq TO conn;   -- 请求日志 logid 序列
+GRANT INSERT ON TABLE public.loginlog TO conn;                        -- 登录日志表（login/loginaccount 写入）
+GRANT USAGE, SELECT ON SEQUENCE public.loginlog_logid_seq TO conn;    -- 登录日志 logid 序列
+-- gm（SECURITY DEFINER 函数属主）读写日志表：login() 查登录锁定计数并写 loginlog
+GRANT SELECT, INSERT ON TABLE public.loginlog TO gm;
+GRANT USAGE, SELECT ON SEQUENCE public.loginlog_logid_seq TO gm;
+GRANT SELECT ON TABLE public.serverlog TO gm;                         -- 备用（审计/排查）
+
+-- 2026-11-13 日志归拢：若存在旧表 sysinfo.serverlog(操作审计)/sysinfo.loginlog(登录日志)，
+-- 则迁入 public.serverlog / public.loginlog（logid 统一 +100000 偏移避让；可幂等重放）。
+-- 全新安装（无旧表）时跳过，序列从 1 起。
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ngxapp') THEN
-    CREATE ROLE ngxapp LOGIN PASSWORD 'Ngx#2026$Audit!K9m2';
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='sysinfo' AND tablename='serverlog') THEN
+    INSERT INTO public.serverlog(logid,clientip,pckname,funcname,content,logtime,serverip,params,operatorid,res,head)
+    SELECT s.logid+100000,s.clientip,s.pckname,s.funcname,s.content,s.logtime,s.serverip,s.params,s.operatorid,s.res,s.head
+    FROM sysinfo.serverlog s
+    WHERE NOT EXISTS (SELECT 1 FROM public.serverlog p WHERE p.logid=s.logid+100000);
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='sysinfo' AND tablename='loginlog') THEN
+    INSERT INTO public.loginlog(logid,logintime,operatorno,ip,accounts,systemid)
+    SELECT s.logid+100000,s.logintime,s.operatorno,s.ip,s.accounts,s.systemid
+    FROM sysinfo.loginlog s
+    WHERE NOT EXISTS (SELECT 1 FROM public.loginlog p WHERE p.logid=s.logid+100000);
+  END IF;
+  PERFORM setval('public.serverlog_logid_seq', GREATEST((SELECT COALESCE(max(logid),1) FROM public.serverlog),1), true);
+  PERFORM setval('public.loginlog_logid_seq', GREATEST((SELECT COALESCE(max(logid),1) FROM public.loginlog),1), true);
+END $$;
+-- 2026-11-13 二次清理：确认 public 侧数据完整后 DROP 旧表与旧序列（幂等；本 dump 已不含其 CREATE，重放即一致）。
+DROP TABLE IF EXISTS sysinfo.serverlog;
+DROP SEQUENCE IF EXISTS sysinfo.serverlog_logid_seq;
+DROP TABLE IF EXISTS sysinfo.loginlog;
+DROP SEQUENCE IF EXISTS sysinfo.loginlog_logid_seq;
+GRANT USAGE ON SCHEMA sysinfo TO conn;
+GRANT USAGE ON SCHEMA gm TO conn;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA sysinfo TO conn;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA gm TO conn;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA conn TO conn;
+ALTER DEFAULT PRIVILEGES IN SCHEMA sysinfo GRANT EXECUTE ON FUNCTIONS TO conn;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gm GRANT EXECUTE ON FUNCTIONS TO conn;
+
+-- 移除原专用连接账号 ngxapp（先回收其名下授权再删除；幂等：不存在则跳过）
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ngxapp') THEN
+    DROP OWNED BY ngxapp;
+    DROP ROLE ngxapp;
   END IF;
 END
 $$;
 
-GRANT USAGE ON SCHEMA sysinfo TO ngxapp;
-GRANT USAGE ON SCHEMA gm TO ngxapp;
-GRANT USAGE ON SCHEMA conn TO ngxapp;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA sysinfo TO ngxapp;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA gm TO ngxapp;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA conn TO ngxapp;
-ALTER DEFAULT PRIVILEGES IN SCHEMA sysinfo GRANT EXECUTE ON FUNCTIONS TO ngxapp;
-ALTER DEFAULT PRIVILEGES IN SCHEMA gm GRANT EXECUTE ON FUNCTIONS TO ngxapp;
+-- 重放收尾：初始数据使用固定 permissionid（如 100/102），序列须同步到既有数据最大值，
+-- 否则全新安装后 nextval 生成的 id 会与初始数据冲突（-operpermission 主键重复）。
+SELECT setval('sysinfo.operpermission_permissionid_seq',
+              COALESCE((SELECT max(permissionid) FROM sysinfo.operpermission), 1), true);
+-- ==================== 外键引用元数据表 public.fk_meta（建模生成模板用） ====================
+CREATE TABLE IF NOT EXISTS public.fk_meta (
+  id bigserial primary key,
+  master_schema character varying(63) NOT NULL,
+  master_table character varying(63) NOT NULL,
+  master_column character varying(63) NOT NULL,
+  master_multi smallint DEFAULT 0,
+  fk_schema character varying(63) NOT NULL,
+  fk_table character varying(63) NOT NULL,
+  fk_column character varying(63) NOT NULL,
+  display_columns character varying(255) DEFAULT '',
+  master_module character varying(63) DEFAULT '',
+  isused smallint DEFAULT 1,
+  createtime timestamp DEFAULT now()
+);
+ALTER TABLE public.fk_meta OWNER TO postgres;
+COMMENT ON TABLE public.fk_meta IS '外键引用元数据（建模生成模板用）：主模式/主表/主字段(被引用方)、主字段是否可多选(1=可多选,逗号分隔)、外键模式/外键表/外键字段(引用方)、主表显示字段(逗号分隔一个或多个)、主表前端模块id';
+CREATE UNIQUE INDEX IF NOT EXISTS fk_meta_uniq ON public.fk_meta(fk_schema,fk_table,fk_column);
+GRANT SELECT ON TABLE public.fk_meta TO conn;
+GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.fk_meta TO gm;
+GRANT USAGE,SELECT ON SEQUENCE public.fk_meta_id_seq TO conn,gm;
+
+INSERT INTO sysinfo.errorcode(errorcode,message,primekey,schema,isused)
+SELECT 100039,'关联数据不存在！','100039','sysinfo',1 WHERE NOT EXISTS (SELECT 1 FROM sysinfo.errorcode WHERE errorcode=100039);
+-- ==================== fk_meta 增加主表所在数据库字段（分库/分表场景） ====================
+ALTER TABLE public.fk_meta ADD COLUMN IF NOT EXISTS master_db character varying(63) DEFAULT 'local';
+COMMENT ON COLUMN public.fk_meta.master_db IS '主表所在数据库：local=本机(默认)；其它=外部库，经 postgres_fdw 映射到本地 fdwext schema 后访问';

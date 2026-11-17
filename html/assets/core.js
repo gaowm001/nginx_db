@@ -65,10 +65,23 @@ function icon(n,s){s=s||16;return '<svg width="'+s+'" height="'+s+'" viewBox="0 
 function currentPath(){
   try{ return location.pathname+location.search+location.hash; }catch(e){ return 'index.html'; }
 }
+/* 给 URL 的 query 部分追加时间戳参数（保持在 #hash 之前）：
+ * 强制浏览器向服务器取最新文档。登录页/首页无 Cache-Control 响应头，
+ * 浏览器启发式缓存曾导致"会话超时跳转到的登录页是旧版（无记住密码功能）"——
+ * 带参数的跳转 URL 命中了改版前的旧缓存条目；每次 URL 唯一即可规避。 */
+function withTs(u){
+  try{
+    var h='',q=String(u||'');
+    var hi=q.indexOf('#');
+    if(hi>=0){ h=q.slice(hi); q=q.slice(0,hi); }
+    return q+((q.indexOf('?')>=0)?'&':'?')+'_ts='+Date.now()+h;
+  }catch(e){ return u; }
+}
 function logout(msg){
   try{ Store.del('token'); Store.del('actions'); Store.del('operator'); }catch(e){}
   var url='login.html';
   try{ url+='?redirect='+encodeURIComponent(currentPath()); }catch(e){}
+  url=withTs(url);
   if(msg){ try{ alert(msg); }catch(e){} }
   try{ location.replace(url); }catch(e){ location.href=url; }
 }
@@ -120,9 +133,10 @@ function toast(msg,type){
 
 /* ---------- modal ---------- */
 const Modal = {
-  el:null,
+  stack:[],
   open: function(o){
-    this.close();
+    /* 栈式多实例：支持在弹窗之上再弹弹窗（如“权限明细”抽屉上的“新增权限”行编辑框），
+       打开新层不再关闭旧层；close() 关最上层，close(m) 关指定层。 */
     var m=document.createElement('div');
     m.className='modal open';
     m.innerHTML='<div class="modal__mask"></div><div class="modal__box'+(o.wide?' wide':'')+'\">'+
@@ -131,13 +145,23 @@ const Modal = {
       '<div class="modal__body">'+(o.body||'')+'</div>'+
       (o.footer===false?'':'<div class="modal__foot">'+(o.footer||'')+'</div>')+'</div>';
     document.body.appendChild(m);
-    this.el=m;
-    m.querySelector('.modal__mask').addEventListener('click',function(){ if(o.maskClose===false) return; Modal.close(); });
-    $$('[data-close]',m).forEach(function(b){b.addEventListener('click',function(){Modal.close();});});
+    this.stack.push(m);
+    m.style.zIndex=String(80+this.stack.length);
+    m.querySelector('.modal__mask').addEventListener('click',function(){ if(o.maskClose===false) return; Modal.close(m); });
+    $$('[data-close]',m).forEach(function(b){b.addEventListener('click',function(){Modal.close(m);});});
     if(o.onMount) o.onMount(m);
     return m;
   },
-  close: function(){ if(this.el){this.el.remove();this.el=null;} }
+  close: function(m){
+    if(m){
+      var i=this.stack.indexOf(m);
+      if(i>=0)this.stack.splice(i,1);
+      m.remove();
+      return;
+    }
+    var top=this.stack.pop();
+    if(top)top.remove();
+  }
 };
 
 /* ---------- confirm ---------- */

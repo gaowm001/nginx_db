@@ -43,7 +43,9 @@ http {
         location /func {
             limit_req zone=apilimit burst=100 nodelay;
             limit_conn apiconn 20;
-            postgresconn "host=127.0.0.1 dbname=postgres user=ngxapp password=__NGXAPP_PASS__ port=5432";
+            postgresconn "host=127.0.0.1 dbname=postgres user=conn password=__CONN_PASS__ port=5432";
+            postgrespoolsize 16;
+            postgresreloadtoken __RELOAD_TOKEN__;
             rewrite ^/func/(.*)$ /$1 break;
         }
 

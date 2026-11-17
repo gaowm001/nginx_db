@@ -35,12 +35,19 @@
         <label>密码</label>
         <input class="input" id="login-password" type="password" autocomplete="current-password" placeholder="请输入密码">
       </div>
+      <div class="field" id="remember-row">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;font-weight:500;color:var(--text)">
+          <input type="checkbox" id="remember-pass" style="width:15px;height:15px;margin:0;accent-color:var(--primary)">
+          记住密码
+          <span style="font-weight:400;color:var(--muted);font-size:12px">（加密保存在本机，建议仅个人电脑使用）</span>
+        </label>
+      </div>
       <button class="btn btn--primary" id="btn-login" style="justify-content:center;padding:11px">登录</button>
       <div class="auth__hint">NGXDB Admin Suite · 零依赖前端</div>
     </div>
   </div>
 </div>
-<script src="assets/core.js?v=7"></script>
+<script src="assets/core.js?v=8"></script>
 <script>
 (function(){
   /* 主题 */
@@ -58,6 +65,49 @@
   var uname=$('#login-username');
   uname.addEventListener('keydown',function(e){if(e.key==='Enter')form.focus();});
   $('#btn-login').addEventListener('click',doLogin);
+
+  /* ===== 记住密码：Web Crypto AES-GCM 加密后存本机 localStorage =====
+   * - 口令不落明文：随机 256 位密钥 + 随机 IV 加密后存储，防止明文直读/截图/日志泄露；
+   * - 密钥与密文同存本机，可防“随手翻看”，但防不了本机恶意脚本——共享电脑、
+   *   等保三级（要求双因素）等场景请勿勾选；
+   * - 仅在登录成功后写入（确保保存的是有效凭据），取消勾选即清除。 */
+  var RK='ngxdb_rmk',RC='ngxdb_rpc';
+  var rememberBox=$('#remember-pass');
+  var cryptoOK=!!(window.crypto&&crypto.subtle&&rememberBox&&window.btoa&&window.atob&&window.TextEncoder&&window.TextDecoder);
+  var _key=null;
+  function b64(buf){var a=new Uint8Array(buf),s='';for(var i=0;i<a.length;i++)s+=String.fromCharCode(a[i]);return btoa(s);}
+  function unb64(s){var t=atob(s),a=new Uint8Array(t.length);for(var i=0;i<t.length;i++)a[i]=t.charCodeAt(i);return a;}
+  function getKey(){
+    if(_key)return Promise.resolve(_key);
+    var raw=Store.get(RK);
+    if(!raw){raw=b64(crypto.getRandomValues(new Uint8Array(32)));Store.set(RK,raw);}
+    return crypto.subtle.importKey('raw',unb64(raw),{name:'AES-GCM'},false,['encrypt','decrypt']).then(function(k){_key=k;return k;});
+  }
+  function saveCred(u,p){
+    return getKey().then(function(k){
+      var iv=crypto.getRandomValues(new Uint8Array(12));
+      return crypto.subtle.encrypt({name:'AES-GCM',iv:iv},k,new TextEncoder().encode(JSON.stringify({u:u,p:p}))).then(function(ct){
+        Store.set(RC,b64(iv)+'.'+b64(ct));
+      });
+    });
+  }
+  function loadCred(){
+    var v=Store.get(RC);
+    if(!v||v.indexOf('.')<0)return Promise.resolve(null);
+    var parts=v.split('.');
+    return getKey().then(function(k){
+      return crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(parts[0])},k,unb64(parts[1]));
+    }).then(function(pt){
+      var o;try{o=JSON.parse(new TextDecoder().decode(pt));}catch(e){return null;}
+      return (o&&o.u&&o.p)?o:null;
+    }).catch(function(){clearCred();return null;});
+  }
+  function clearCred(){Store.del(RC);Store.del(RK);}
+  if(cryptoOK){ /* 打开登录页：回填已保存的账号与密码 */
+    loadCred().then(function(o){ if(o){uname.value=o.u;form.value=o.p;rememberBox.checked=true;} });
+  }else if(rememberBox){ /* 非 HTTPS/老浏览器无 Web Crypto：隐藏该功能 */
+    rememberBox.closest('.field').style.display='none';
+  }
 
   function showAlert(msg){var a=$('#alert');a.textContent=msg||'登录失败';a.classList.add('show');}
   function hideAlert(){var a=$('#alert');a.classList.remove('show');}
@@ -86,7 +136,13 @@
           var rd='';
           try{ rd=new URLSearchParams(location.search).get('redirect')||''; }catch(e){}
           if(!rd||rd.charAt(0)!=='/'||rd.indexOf('//')>=0){ rd='index.html'; }
-          location.href=rd;
+          /* 记住密码：仅登录成功后保存（确保存的是有效凭据）；未勾选则清除旧存 */
+          var go=function(){ location.href=(typeof withTs==='function')?withTs(rd):rd; };
+          if(cryptoOK){
+            if(rememberBox.checked){ saveCred(u,p).catch(function(){}).then(go); return; }
+            clearCred();
+          }
+          go();
           return;
         }
         if((j.errorcode===100005||j.errorcode===100011||j.errorcode===100012)&&attempt<MAX){attempt++;setTimeout(tryLogin,300);return;}

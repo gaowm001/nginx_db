@@ -20,7 +20,7 @@ PostgreSQL: gm.check_login(令牌鉴权+权限校验) → 业务函数 → gm.re
    返回 {"errorcode":0/错误码, "message":"...", "info":{...}}
 ```
 
-### 1.2 功能模块与函数分布（共 81 个函数）
+### 1.2 功能模块与函数分布（共 82 个函数：业务 70 + 内部 12）
 
 | 模式 | 数量 | 函数 |
 |---|---|---|
@@ -31,6 +31,7 @@ PostgreSQL: gm.check_login(令牌鉴权+权限校验) → 业务函数 → gm.re
 | conn / crypto | 0 | 无自定义函数（crypto 仅供 pgcrypto 扩展对象） |
 
 > 每个 CRUD 模块固定 6 个函数：`_add / _edit / _merge / _del / _undel / _query`。
+> 例外：父子表联动模块（基于已有表生成）为 5 个函数——`父表_子表_query/_add/_edit/_merge/_del`，无 `_undel`。
 
 ### 1.3 权限模型
 
@@ -115,10 +116,10 @@ D1 add(upid=100)→0 且 idpath=100.xxx/idlevel=2；D2 add(upid=999999)→100014
 E1 orgtype_add→0；E2 重复 id→100020；E3 query total≥1；E4 edit→0；E5 merge→0；E6 del→0；E7 del(999999)→100020；E8 undel→0；E9 sysorg_add(父=根)→0；E10 upid=999999→100014；E11 重复 id→100018；E12 query 含 idpath/idlevel；E13 二级部门 idlevel=2；E14 edit→0；E15 merge→0；E16 del(叶)→0；E17 del(有下级)→100016；E18 del(顶级100)→100015；E19 undel→0。
 
 ### 场景 F：员工 operinfo / operinfoorg / operinfopermission（G5）
-F1 operinfo_add(106 权限)→0 返回 id+pass；F2 数据验证 operpermission/sysoper 落库（⚠ 疑 AND 恒假缺陷）；F3 重复 accounts→100022；F4 已存在 operatorid→100011；F5 query 全量/分页/过滤；F6 edit→0；F7 merge→0；F8 del→0；F9 del(999999)→100011；F10 undel→0；F11 新员工用 pass 登录成功且 actions 仅 106 子树；F12 operinfoorg_add→0；F13 edit→0；F14 merge→0；F15 query→0；F16 del→0；F17 undel→0；F18 operinfopermission_add→0+数据验证（⚠ 同 F2）；F19 edit→0；F20 merge→0；F21 query→0；F22 del→0；F23 undel→0。
+F1 operinfo_add(106 权限)→0 返回 id+pass；F2 数据验证 operpermission/sysoper 落库（⚠ 疑 AND 恒假缺陷）；F3 重复 accounts→100022；F4 已存在 operatorid→100011；F5 query 全量/分页/过滤；F6 edit→0；F7 merge→0；F8 del→0；F9 del(999999)→100011；F10 undel→0；F11 新员工用 pass 登录成功且 actions 仅 106 子树；F12 operinfoorg_add→0；F13 edit→0；F14 merge→0；F15 query→0；F16 del→0；F17 undel→0；F18 operinfopermission_add→0+数据验证（⚠ 同 F2，已修复）；F19 edit→0；F20 merge→0；F21 query→0（含分页，toper 别名缺陷已修复）；F22 del→0；F23 undel→0；F24 权限子表整表 JSON 一次性保存（operinfopermission_edit+operpermissionjson，按子表主键增删改：修改行主键不变、新增行新主键、删除行按主键差集移除）；F25 del(10000/100000)→100036 系统内置操作员保护。
 
 ### 场景 G：角色 roleinfo（G6）
-G1 add(106 权限)→0；G2 重复 id→100023；G3 query 含 rolepermissionjson；G4 edit→0；G5 角色引用自身→100017 循环定义；G6 merge→0；G7 del→0；G8 del(999999)→100023；G9 undel→0；G10 角色赋给员工后登录 actions 含 106（继承验证）。
+G1 add(106 权限)→0；G2 重复 id→100023；G3 query 含 rolepermissionjson；G4 edit→0；G5 角色引用自身→100017 循环定义；G6 merge→0；G7 del→0；G8 del(999999)→100023；G9 undel→0；G10 角色赋给员工后登录 actions 含 106（继承验证）；G11 角色权限子表整表 JSON 一次性保存（roleinfo_edit+rolepermissionjson，按子表主键增删改，主键稳定）。
 
 ### 场景 H：省市 province / city（G7）
 H1 province_add→0；H2 重复 pid→100033；H3 query total≥35；H4 edit→0；H5 merge→0；H6 del→0；H7 del(999999)→100033；H8 undel→0；H9 city_add→0；H10 pid 无效→100033；H11 cid 重复→100034；H12 query 按 pid 过滤；H13 edit→0；H14 edit(pid 无效)→100033；H15 merge→0；H16 del→0；H17 del(999999)→100034；H18 undel→0。
@@ -143,15 +144,20 @@ N1 口令哈希迁移后原口令仍可登录（admin/123456→0）且 operinfo.
 
 ---
 
-## 4. 函数覆盖矩阵（81/81，含 2 个等保触发器函数）
+### 场景 O：子表 JSON 按主键增删改（2026-11-14 新增，同日已执行通过）
+O1 员工权限整表提交（修改 1 行+新增 1 行）→0，回读原行主键不变、新行有新主键；O2 再提交去掉新增行→0，按主键移除；
+O3 还原原始 JSON→0；O4 角色权限同 O1-O3（roleinfo_edit+rolepermissionjson）；O5 del(10000/100000)→100036；
+O6 operinfopermission_query 分页→0（toper 修复验证）。测试用临时员工/角色，测后清理。
+
+## 4. 函数覆盖矩阵（82/82，含 2 个等保触发器函数）
 
 | 函数 | 用例 | 函数 | 用例 | 函数 | 用例 |
 |---|---|---|---|---|---|
 | gm.actionupdate | A4 | gm.check_login | B6-B10,K1,K2 | gm.gethelp | A8 |
 | gm.gettoken | A11 | gm.gettokene | A11 | gm.http_get | A9 |
-| gm.http_post | A10 | gm.returnjson | A1-A3 | public._ensure_roles | A5 |
+| gm.http_post | A10 | gm.returnjson | A1-A3 | gm._ensure_roles | A5 |
 | sysinfo.login | B1-B5 | sysinfo.loginaccount | J4,J5 | sysinfo.regaccount | J1-J3 |
-| sysinfo.aes_encrypt | A6 | sysinfo.aes_decrypt | A6,A7 | sysinfo.errorcode_query | I2 |
+| gm.aes_encrypt | A6 | gm.aes_decrypt | A6,A7 | sysinfo.errorcode_query | I2 |
 | sysinfo.actions_query | I3 | sysinfo.serverlog_query | I1 | sysinfo.systeminfo_add | C1-C3 |
 | sysinfo.systeminfo_del | C9,C10 | sysinfo.systeminfo_edit | C7 | sysinfo.systeminfo_merge | C8 |
 | sysinfo.systeminfo_query | C4-C6 | sysinfo.systeminfo_undel | C11 | sysinfo.sysaction_add | D1-D3 |
@@ -166,13 +172,15 @@ N1 口令哈希迁移后原口令仍可登录（admin/123456→0）且 operinfo.
 | sysinfo.operinfoorg_del | F16 | sysinfo.operinfoorg_edit | F13 | sysinfo.operinfoorg_merge | F14 |
 | sysinfo.operinfoorg_query | F15 | sysinfo.operinfoorg_undel | F17 | sysinfo.operinfopermission_add | F18 |
 | sysinfo.operinfopermission_del | F22 | sysinfo.operinfopermission_edit | F19 | sysinfo.operinfopermission_merge | F20 |
-| sysinfo.operinfopermission_query | F21 | sysinfo.operinfopermission_undel | F23 | sysinfo.province_add | H1,H2 |
-| sysinfo.province_del | H6,H7 | sysinfo.province_edit | H4 | sysinfo.province_merge | H5 |
-| sysinfo.province_query | H3 | sysinfo.province_undel | H8 | sysinfo.city_add | H9-H11 |
-| sysinfo.city_del | H16,H17 | sysinfo.city_edit | H13,H14 | sysinfo.city_merge | H15 |
-| sysinfo.city_query | H12 | sysinfo.city_undel | H18 | sysinfo.roleinfo_add | G1,G2 |
+| sysinfo.operinfopermission_query | F21 | sysinfo.operinfopermission_undel | F23 | public.province_add | H1,H2 |
+| public.province_del | H6,H7 | public.province_edit | H4 | public.province_merge | H5 |
+| public.province_query | H3 | public.province_undel | H8 | public.city_add | H9-H11 |
+| public.city_del | H16,H17 | public.city_edit | H13,H14 | public.city_merge | H15 |
+| public.city_query | H12 | public.city_undel | H18 | sysinfo.roleinfo_add | G1,G2 |
 | sysinfo.roleinfo_del | G7,G8 | sysinfo.roleinfo_edit | G4,G5 | sysinfo.roleinfo_merge | G6 |
-| sysinfo.roleinfo_query | G3 | sysinfo.roleinfo_undel | G9 | — | — |
+| sysinfo.roleinfo_query | G3 | sysinfo.roleinfo_undel | G9 | sysinfo.loginlog_query | I4 |
+
+注：`gm.hash_pass_trigger`（口令哈希触发器）由 F1 新增员工间接覆盖，已计入 82/82。
 
 ## 5. 已知限制与预期缺陷（不视为测试失败，但必须列明）
 

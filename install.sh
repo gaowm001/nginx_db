@@ -4,6 +4,7 @@
 #
 #  流程：安装依赖 -> 编译安装 nginx(含 postgres 扩展) -> 初始化 PostgreSQL 18
 #        -> 导入 extension/ngxdb_postgresql.sql -> 生成 nginx.conf -> 部署 html
+#        -> 部署本地管理台 admin(ngxdb-admin 服务，仅本机 127.0.0.1:8765)
 #        -> 注册 systemd 服务(开机自启) -> 启动 nginx -> 验证登录(默认 admin/123456)
 #
 #  用法：  sudo bash install.sh [选项]
@@ -14,6 +15,7 @@
 #    --skip-nginx    跳过 nginx 编译安装
 #    --skip-db       跳过 PostgreSQL 初始化/导入
 #    --skip-html     跳过前端 html 部署
+#    --skip-admin    跳过本地管理台 admin 部署
 #    --skip-verify   跳过登录验证
 #    -h, --help      显示本帮助
 #
@@ -33,9 +35,14 @@ PG_PORT="${PG_PORT:-5432}"
 PG_DBNAME="${PG_DBNAME:-ngxdb}"
 PG_SUPERUSER="${PG_SUPERUSER:-postgres}"
 PG_APP_USER="${PG_APP_USER:-gm}"
-PG_APP_PASSWORD="${PG_APP_PASSWORD:-gmo@12345}"
+PG_APP_PASSWORD_SET=1
+if [ -z "${PG_APP_PASSWORD:-}" ]; then
+  # 未显式指定时随机生成，避免公开仓库携带默认弱口令
+  PG_APP_PASSWORD="$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
+  PG_APP_PASSWORD_SET=0
+fi
 WITH_ORACLE="${WITH_ORACLE:-0}"
-SKIP_DEPS=0; SKIP_NGINX=0; SKIP_DB=0; SKIP_HTML=0; SKIP_VERIFY=0
+SKIP_DEPS=0; SKIP_NGINX=0; SKIP_DB=0; SKIP_HTML=0; SKIP_ADMIN=0; SKIP_VERIFY=0
 JOBS="$(nproc 2>/dev/null || echo 2)"
 
 # ----------------------------- 路径 -----------------------------
@@ -64,6 +71,7 @@ for a in "$@"; do
     --skip-nginx) SKIP_NGINX=1 ;;
     --skip-db) SKIP_DB=1 ;;
     --skip-html) SKIP_HTML=1 ;;
+    --skip-admin) SKIP_ADMIN=1 ;;
     --skip-verify) SKIP_VERIFY=1 ;;
     -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) warn "忽略未知参数: $a" ;;
@@ -266,6 +274,23 @@ NGXCONF
   ok "前端已部署到: $NGINX_PREFIX/html"
 }
 
+# ----------------------------- 步骤 4.6：本地管理台 admin -----------------------------
+step_admin() {
+  if [ "$SKIP_ADMIN" = "1" ]; then log "跳过本地管理台部署(--skip-admin)"; return 0; fi
+  local admin_dir="$PROJECT_DIR/admin"
+  if [ ! -f "$admin_dir/app.py" ]; then
+    warn "未找到管理台目录 $admin_dir，跳过（不影响 ngxdb 本体）"
+    return 0
+  fi
+  log "==== [4.6/6] 部署本地管理台 admin ===="
+  # 管理台业务库口令：默认沿用环境 PGPASSWORD，或以 PG_SUPER_PASSWORD 显式指定
+  if [ -n "${PG_SUPER_PASSWORD:-}" ]; then export PGPASSWORD="$PG_SUPER_PASSWORD"; fi
+  NGINX_PREFIX="$NGINX_PREFIX" NGXDB_DEPLOY_DIR="${NGXDB_DEPLOY_DIR:-$NGINX_PREFIX/html/ngxdb}" \
+  ADMIN_PORT="${ADMIN_PORT:-8765}" SUDO_USER="${SUDO_USER:-$(id -un)}" \
+    bash "$admin_dir/deploy.sh"
+  ok "本地管理台已部署（入口: http://127.0.0.1:8765/）"
+}
+
 # ----------------------------- 步骤 4.5：systemd 服务(开机自启) -----------------------------
 use_systemd() { command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; }
 step_service() {
@@ -350,11 +375,28 @@ step_start_verify() {
     return 1
   fi
 
+  if [ "$SKIP_ADMIN" != "1" ]; then
+    local acode
+    acode="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ADMIN_PORT:-8765}/api/ping" || echo 000)"
+    log "GET  http://127.0.0.1:${ADMIN_PORT:-8765}/api/ping -> HTTP $acode"
+    if [ "$acode" = "200" ]; then
+      ok "本地管理台 admin 已就绪：http://127.0.0.1:${ADMIN_PORT:-8765}/"
+    else
+      warn "管理台未就绪(HTTP $acode)，可手动执行: bash $PROJECT_DIR/admin/deploy.sh"
+    fi
+  fi
+
   echo
   ok "================ NGXDB 安装完成 ================"
   ok "访问地址：http://<本机IP>:$LISTEN_PORT/login.html"
   ok "默认账号：admin     密码：123456     (生产环境请立即修改！)"
   ok "数据库：$PG_DBNAME (角色 $PG_APP_USER / conn)"
+  if [ "$PG_APP_PASSWORD_SET" = "1" ]; then
+    ok "数据库角色口令：由环境变量 PG_APP_PASSWORD 指定"
+  else
+    ok "数据库角色($PG_APP_USER/conn)口令已随机生成：$PG_APP_PASSWORD"
+    ok "（已写入 nginx.conf；请另行妥善保存，生产环境建议安装后修改）"
+  fi
   if use_systemd && [ -f /etc/systemd/system/nginx.service ]; then
     ok "服务：nginx 已注册 systemd(开机自启)。管理命令：systemctl status|restart|stop nginx"
   fi
@@ -365,5 +407,6 @@ step_deps
 step_db
 step_nginx
 step_conf_html
+step_admin
 step_service
 step_start_verify

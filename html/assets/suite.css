@@ -53,6 +53,20 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .nav-group.closed .chev{transform:rotate(-90deg)}
 .nav-group.closed .nav-group__list{display:none}
 .nav-group__list{list-style:none;margin:2px 0 0;padding:0 0 0 4px}
+/* 侧栏目录节点（无模块、有子级）：点击标题展开/收起下级菜单 */
+.nav-dir{list-style:none;margin:2px 0 0;padding:0}
+.nav-dir__title{display:flex;align-items:center;gap:8px;padding:8px 11px;margin:2px 0;border-radius:9px;
+  font-size:12.5px;font-weight:600;color:var(--side-muted);cursor:pointer;transition:background .15s,color .15s}
+.nav-dir__title:hover{color:var(--side-text);background:rgba(255,255,255,.04)}
+.nav-dir__title>span:first-of-type{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-dir__title .chev{transition:transform .2s;color:var(--side-muted)}
+.nav-dir.closed .chev{transform:rotate(-90deg)}
+.nav-dir.closed .nav-dir__list{display:none}
+.nav-dir__list{list-style:none;margin:0;padding:0 0 0 14px}
+/* 树表右栏：当前树节点自身行（带"当前"徽标） */
+tr.cur-node{background:rgba(79,70,229,.07)}
+.cur-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:10.5px;
+  font-weight:600;background:var(--primary);color:#fff;vertical-align:middle}
 .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;margin:2px 0;border-radius:9px;
   color:var(--side-text);font-size:13.5px;font-weight:500;transition:background .15s,color .15s;cursor:pointer}
 .nav-item:hover{background:rgba(255,255,255,.06);color:#fff}
@@ -183,7 +197,7 @@ table.data td.nowrap-el{max-width:340px;overflow:hidden;text-overflow:ellipsis}
 @keyframes rise{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
 .modal__head{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border)}
 .modal__head h3{font-size:15.5px;flex:1}
-.modal__body{padding:20px}
+.modal__body{padding:20px;max-height:calc(100vh - 230px);overflow:auto}
 .modal__foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border)}
 .detail-head{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface-2);border-radius:10px;margin-bottom:12px;font-size:13px}
 .detail-head b{color:var(--primary)}
@@ -301,3 +315,11 @@ table.data td.nowrap-el{max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .card-item:last-child{border-bottom:0}
 .card-item span{color:var(--muted)}
 .card-item b{font-weight:600;color:var(--text);text-align:right;word-break:break-all}
+
+/* 外键引用编辑行（管理台建表/修改表） */
+.nt-fk{display:flex;gap:6px;align-items:center;margin:0 0 6px;flex-wrap:wrap}
+.nt-fk select,.nt-fk input{height:30px;font-size:12.5px}
+.nt-fk .fk-col{max-width:170px}.nt-fk .fk-mt{max-width:210px}.nt-fk .fk-mc{width:120px}
+.nt-fk .fk-disp{width:180px}.nt-fk .fk-mod{width:150px}
+.nt-fk .lbl{display:flex;align-items:center;gap:4px;color:var(--dim);font-size:12.5px}
+#nt-fk-box h4,#nt-tree-box h4{margin:10px 0 6px}

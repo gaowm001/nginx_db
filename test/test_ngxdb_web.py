@@ -89,9 +89,9 @@ QUERIES = [
     ('sysinfo.operinfo_query', {}), ('sysinfo.operinfoorg_query', {}),
     ('sysinfo.operinfopermission_query', {}), ('sysinfo.sysorg_query', {}),
     ('sysinfo.orgtype_query', {}), ('sysinfo.roleinfo_query', {}),
-    ('sysinfo.province_query', {}), ('sysinfo.city_query', {}),
+    ('public.province_query', {}), ('public.city_query', {}),
     ('sysinfo.errorcode_query', {}), ('sysinfo.actions_query', {}),
-    ('sysinfo.serverlog_query', {}),
+    ('sysinfo.serverlog_query', {'rows': 20, 'page': 1}), ('sysinfo.loginlog_query', {'rows': 20, 'page': 1}),
 ]
 
 def t_static():
@@ -137,29 +137,29 @@ def t_crud(tok):
     def call(func, d):
         d['token'] = tok
         return api(func, d)[1]
-    r = call('sysinfo.province_add', {'province': '测试省W'})
+    r = call('public.province_add', {'province': '测试省W'})
     pid = (r.get('info') or {}).get('id') if r.get('errorcode') == 0 else None
     rec('L5a province_add→0', r.get('errorcode') == 0 and pid, str(r)[:120])
-    r = call('sysinfo.province_edit', {'pid': pid, 'province': '测试省W改'})
+    r = call('public.province_edit', {'pid': pid, 'province': '测试省W改'})
     rec('L5b province_edit→0', r.get('errorcode') == 0, str(r)[:120])
-    r = call('sysinfo.province_query', {'province': '测试省W改'})
+    r = call('public.province_query', {'province': '测试省W改'})
     ok = r.get('errorcode') == 0 and r.get('info', {}).get('total') == 1
     rec('L5c province_query 过滤命中', ok, str(r)[:120])
-    r = call('sysinfo.city_add', {'pid': pid, 'city': '测试市W'})
+    r = call('public.city_add', {'pid': pid, 'city': '测试市W'})
     cid = (r.get('info') or {}).get('id') if r.get('errorcode') == 0 else None
     rec('L5d city_add→0', r.get('errorcode') == 0 and cid, str(r)[:120])
-    r = call('sysinfo.city_query', {'pid': pid})
+    r = call('public.city_query', {'pid': pid})
     ok = r.get('errorcode') == 0 and r.get('info', {}).get('total') == 1
     rec('L5e city_query 按省过滤', ok, str(r)[:120])
-    r = call('sysinfo.city_del', {'cid': cid})
+    r = call('public.city_del', {'cid': cid})
     rec('L5f city_del→0', r.get('errorcode') == 0, str(r)[:120])
-    r = call('sysinfo.province_del', {'pid': pid})
+    r = call('public.province_del', {'pid': pid})
     rec('L5g province_del→0', r.get('errorcode') == 0, str(r)[:120])
     # 物理清理测试数据，保持在用库干净
     import subprocess
-    env = dict(os.environ, PGPASSWORD=os.environ.get('PGPASSWORD', 'gao@12345'))
+    env = dict(os.environ, PGPASSWORD=os.environ.get('PGPASSWORD', ''))
     subprocess.run(['psql', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres', '-c',
-                    'DELETE FROM sysinfo.city WHERE city LIKE %s; DELETE FROM sysinfo.province WHERE province LIKE %s' % ("'测试%W%'", "'测试%W%'")],
+                    'DELETE FROM public.city WHERE city LIKE %s; DELETE FROM public.province WHERE province LIKE %s' % ("'测试%W%'", "'测试%W%'")],
                    env=env, capture_output=True, timeout=15)
 
 def t_concurrent(tok):

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NGXDB 本地管理台</title>
+<link rel="icon" href="static/favicon.svg">
+<link rel="stylesheet" href="static/admin.css?v=6">
+<script>
+/* 全局 JS 错误直接显示在页面顶部（在 admin.js 之前注册，语法/运行错误均可捕获） */
+window.addEventListener('error', function (e) {
+  var el = document.getElementById('js-error');
+  if (el) {
+    el.style.display = 'block';
+    el.textContent = 'JS 错误: ' + (e.message || '') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '');
+  }
+});
+</script>
+</head>
+<body>
+<div id="js-error" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;padding:8px 14px;font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap"></div>
+<header class="topbar">
+  <div class="brand"><span class="logo">◆</span> NGXDB 本地管理台</div>
+  <div class="badges">
+    <span class="badge" id="app-ver">v27</span><span class="badge">独立系统</span><span class="badge">免登录</span><span class="badge warn">仅限本机</span>
+  </div>
+  <div class="spacer"></div>
+  <div class="chip" id="db-chip">数据库：检测中…</div>
+  <div class="chip" id="nginx-chip">nginx：—</div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="tables">数据表管理</button>
+  <button class="tab" data-tab="gen">模块生成与发布</button>
+  <button class="tab" data-tab="pub">已发布模块</button>
+  <button class="tab" data-tab="sys">系统状态</button>
+</nav>
+
+<main>
+  <section id="tab-tables" class="panel active">
+    <div class="toolbar">
+      <select id="schema-sel"></select>
+      <input id="tbl-search" placeholder="搜索表名/注释…">
+      <div class="spacer"></div>
+      <button class="btn primary" id="btn-new-table">＋ 新建表</button>
+      <button class="btn" id="btn-new-schema-top">＋ 新建模式</button>
+      <button class="btn" id="btn-refresh">刷新</button>
+      <button class="btn" id="btn-fdw">分库外键(FDW)</button>
+    </div>
+    <div class="grid-box"><table class="grid" id="tbl-list">
+      <thead><tr><th>操作</th><th>表名</th><th>模式</th><th>注释</th><th>大小</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-gen" class="panel">
+    <div class="gen-wrap">
+      <div class="gen-left card">
+        <h3>选择表</h3>
+        <select id="gen-table-sel"></select>
+        <label>表类型<select id="gen-kind">
+          <option value="single">单表</option>
+          <option value="parent_child">父子表</option>
+          <option value="tree">树表</option>
+        </select></label>
+        <h3>模块定义</h3>
+        <label>模块中文名<input id="gen-chinese" placeholder="如：公告通知"></label>
+        <label>主键列<input id="gen-pk" placeholder="自动识别"></label>
+        <div class="row2">
+          <label>图标<input id="gen-icon" value="list"></label>
+        </div>
+        <div class="row2" style="grid-template-columns:1fr auto">
+          <label>系统（权限归属）<select id="gen-system"></select></label>
+          <button class="btn small" id="btn-sys-mgr" style="align-self:end">系统管理</button>
+        </div>
+        <h3>权限（本功能挂在哪个权限下）</h3>
+        <div class="row2" style="grid-template-columns:1fr auto auto">
+          <input id="perm-search" placeholder="模糊搜索权限名称/ID/idpath，自动定位">
+          <button class="btn small" id="btn-perm-up">↑ 上移</button>
+          <button class="btn small" id="btn-perm-down">↓ 下移</button>
+        </div>
+        <div id="perm-tree" class="perm-tree"></div>
+        <div class="btns" style="flex-wrap:wrap;gap:4px">
+          <button class="btn small" id="btn-perm-add">新增子节点</button>
+          <button class="btn small" id="btn-perm-del">删除</button>
+          <button class="btn small" id="btn-perm-edit2">修改</button>
+        </div>
+        <div class="hint" id="perm-hint">在权限树中选择挂载的权限节点；菜单/权限ID 自动分配。↑↓ 对搜索出的多个结果排序。</div>
+        <details open><summary>操作权限 actionid</summary>
+          <div class="row3">
+            <label>新增<input id="act-add" type="number"></label>
+            <label>修改<input id="act-edit" type="number"></label>
+            <label>合并<input id="act-merge" type="number"></label>
+            <label>删除<input id="act-del" type="number"></label>
+            <label>恢复<input id="act-undel" type="number"></label>
+            <label>查询<input id="act-query" type="number"></label>
+          </div>
+          <button class="btn small" id="btn-suggest-ids">自动推荐空闲 ID</button>
+        </details>
+        <div id="gen-child-box" style="display:none">
+          <h3>子表（父子表）</h3>
+          <label>子表<select id="gen-child-sel"></select></label>
+          <div class="row2">
+            <label>子表主键<input id="gen-child-pk" placeholder="自动识别"></label>
+            <label>关联字段<select id="gen-child-fk"></select></label>
+          </div>
+          <label>子表中文名<input id="gen-child-cn"></label>
+          <h4>子表业务字段（勾选进入模块）</h4>
+          <div id="gen-child-fields" class="field-list"></div>
+        </div>
+        <h3>业务字段（勾选进入模块）</h3>
+        <div id="gen-fields" class="field-list"></div>
+        <div class="btns">
+          <button class="btn primary" id="btn-gen">① 生成（SQL+页面）</button>
+          <button class="btn ok" id="btn-publish" disabled>② 发布到 nginx</button>
+        </div>
+        <div id="gen-msg" class="msg"></div>
+      </div>
+      <div class="gen-right">
+        <div class="card">
+          <div class="card-head"><h3>生成结果</h3>
+            <div class="subtabs">
+              <button class="stab active" data-stab="sql">SQL</button>
+              <button class="stab" data-stab="mjs">modules.js</button>
+              <button class="stab" data-stab="prev">页面预览</button>
+            </div>
+          </div>
+          <pre id="gen-sql" class="code active"></pre>
+          <pre id="gen-mjs" class="code"></pre>
+          <div id="gen-prev" class="prev-box"><iframe id="prev-frame" title="预览"></iframe></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-pub" class="panel">
+    <div class="toolbar">
+      <span class="hint">以下模块已生成本发布（来源：部署目录 modules.js 生成标记）</span>
+      <div class="spacer"></div>
+      <button class="btn" id="btn-reload-fns">热重载函数缓存</button>
+      <button class="btn" id="btn-pub-refresh">刷新</button>
+    </div>
+    <div class="grid-box"><table class="grid" id="pub-list">
+      <thead><tr><th>表</th><th>中文名</th><th>分组</th><th>菜单ID</th><th>接口前缀</th><th>函数语言</th><th>生成时间</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-sys" class="panel">
+    <div class="sys-grid">
+      <div class="card"><h3>PostgreSQL</h3><pre id="sys-db" class="code small"></pre></div>
+      <div class="card"><h3>nginx / 部署</h3><pre id="sys-nginx" class="code small"></pre></div>
+      <div class="card"><h3>管理台自身</h3><pre id="sys-admin" class="code small"></pre>
+        <p class="hint">前端由后端直接服务（admin/static，no-cache）；后端 API 仅监听 127.0.0.1，不经 nginx。</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="mask" id="mask"></div>
+<div class="modal" id="modal-new">
+  <h3 id="modal-title">新建表</h3>
+  <label>表类型<select id="nt-kind">
+    <option value="single">单表</option>
+    <option value="parent_child">父子表</option>
+    <option value="tree">树表</option>
+  </select></label>
+  <div class="row2">
+    <label>模式<select id="nt-schema-sel"></select></label>
+    <label>表名<input id="nt-table" placeholder="小写字母开头"></label>
+  </div>
+  <div class="btns" style="margin:0 0 8px"><button class="btn small" id="btn-new-schema">＋ 新建模式</button></div>
+  <div class="row2">
+    <label>中文名<input id="nt-chinese" placeholder="表注释"></label>
+    <label>主键名<input id="nt-pk" placeholder="默认 表名+id"></label>
+  </div>
+  <h4>字段</h4>
+  <div id="nt-fields"></div>
+  <div class="btns" style="flex-wrap:wrap;gap:4px">
+    <button class="btn small" id="btn-add-field">＋ 加字段</button>
+    <button class="btn small" id="btn-add-isused">＋ 启用列(isused)</button>
+    <button class="btn small" id="btn-add-sysid">＋ 系统列(systemid)</button>
+  </div>
+  <div id="nt-tree-box" style="display:none">
+    <h4>树表结构列（选树表时自动创建，无需填写）</h4>
+    <div id="nt-tree-fields"></div>
+  </div>
+  <div id="nt-fk-box">
+    <h4>外键（字段引用其它表主键：生成函数自动校验/联查，页面自动选择器）</h4>
+    <div id="nt-fk-list"></div>
+    <button class="btn small" id="btn-add-fk">＋ 加外键</button>
+  </div>
+  <div id="nt-child-box" style="display:none">
+    <h4>子表（父子表）</h4>
+    <div class="row2">
+      <label>子表名<input id="nt-child-table" placeholder="小写字母开头"></label>
+      <label>子表中文名<input id="nt-child-cn"></label>
+    </div>
+    <div class="row2">
+      <label>子表主键<input id="nt-child-pk" placeholder="默认 子表名+id"></label>
+      <label>外键列<input id="nt-child-fk" value="upid"></label>
+    </div>
+    <div id="nt-child-fields"></div>
+    <button class="btn small" id="btn-add-cfield">＋ 加子表字段</button>
+  </div>
+  <div class="btns">
+    <button class="btn primary" id="btn-create-table">创建</button>
+    <button class="btn ok" id="btn-save-table" style="display:none">保存修改</button>
+    <button class="btn" data-close>取消</button>
+  </div>
+  <div id="nt-msg" class="msg"></div>
+</div>
+
+<div class="modal" id="modal-schema">
+  <h3>新建模式</h3>
+  <p class="hint">模式（schema）用于组织表；新建后将自动授权，使发布的函数可经 nginx 调用。</p>
+  <div class="row2">
+    <label>模式名<input id="ns-name" placeholder="小写字母开头，如 sales"></label>
+    <label>中文说明<input id="ns-cn" placeholder="如：销售业务"></label>
+  </div>
+  <div class="btns">
+    <button class="btn primary" id="btn-create-schema">创建</button>
+    <button class="btn" data-close>取消</button>
+  </div>
+  <div id="ns-msg" class="msg"></div>
+</div>
+
+<div class="modal" id="modal-fdw">
+  <h3>分库外键（postgres_fdw 外部数据访问）</h3>
+  <p class="hint">当外键的主表在其它数据库时，填写外部库连接信息，建立 FDW 映射（server: fkserver，外部表映射到本地 fdwext 模式），并可批量把已发布函数中的外键本地引用改写为外部表访问。</p>
+  <div class="row2">
+    <label>主机<input id="fdw-host" value="127.0.0.1"></label>
+    <label>端口<input id="fdw-port" value="5432"></label>
+  </div>
+  <div class="row2">
+    <label>数据库名<input id="fdw-db" placeholder="外部库名"></label>
+    <label>用户<input id="fdw-user" placeholder="外部库用户"></label>
+  </div>
+  <label>密码<input id="fdw-pass" type="password" placeholder="外部库密码"></label>
+  <div class="btns">
+    <button class="btn primary" id="btn-fdw-setup">① 建立外部表映射</button>
+    <button class="btn ok" id="btn-fdw-rewrite">② 批量改写函数</button>
+    <button class="btn" data-close>关闭</button>
+  </div>
+  <div id="fdw-msg" class="msg"></div>
+</div>
+
+<div class="modal" id="modal-perm-edit">
+  <h3>修改权限：<span id="pe-id"></span></h3>
+  <p class="hint" id="pe-path"></p>
+  <h4>功能菜单节点（sysaction）</h4>
+  <div class="row2">
+    <label>菜单/权限名称<input id="pe-name"></label>
+    <label style="display:flex;align-items:center;gap:6px">启用<input type="checkbox" id="pe-isused"></label>
+  </div>
+  <h4>操作权限（actionid 共用，保存时同事务更新 sysaction 与 actions）</h4>
+  <div class="grid-box" style="max-height:300px">
+    <table class="grid" id="pe-ops">
+      <thead><tr><th>操作</th><th>actionid</th><th>权限名称</th><th>接口地址</th><th>说明</th><th>启用</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="btns">
+    <button class="btn primary" id="btn-perm-save">保存（sysaction + actions 同事务）</button>
+    <button class="btn" data-close>取消</button>
+  </div>
+  <div id="pe-msg" class="msg"></div>
+</div>
+
+<div class="modal" id="modal-perm-add">
+  <h3>新增权限节点</h3>
+  <p class="hint" id="pa-parent"></p>
+  <div class="row2">
+    <label>节点名称<input id="pa-name" placeholder="如：客户查询"></label>
+  </div>
+  <div class="btns">
+    <button class="btn primary" id="btn-perm-add-go">创建</button>
+    <button class="btn" data-close>取消</button>
+  </div>
+  <div id="pa-msg" class="msg"></div>
+</div>
+
+<div class="modal" id="modal-sys">
+  <h3>系统管理（systeminfo）</h3>
+  <div class="grid-box" style="max-height:260px">
+    <table class="grid" id="sys-list">
+      <thead><tr><th>systemid</th><th>系统名称</th><th>启用</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <h4>新增系统</h4>
+  <div class="row2">
+    <label>系统ID<input id="ns-id" type="number" placeholder="默认 max+1"></label>
+    <label>系统名称<input id="ns-sname" placeholder="如：销售系统"></label>
+  </div>
+  <div class="row2">
+    <label>加密密钥 prikey<input id="ns-prikey" type="password" placeholder="该系统数据加密密钥"></label>
+    <label>算法 algorithm<input id="ns-algo" type="number" value="1"></label>
+  </div>
+  <div class="btns">
+    <button class="btn primary" id="btn-sys-create">新增</button>
+    <button class="btn" data-close>关闭</button>
+  </div>
+  <div id="ns2-msg" class="msg"></div>
+</div>
+
+<script src="static/admin.js?v=35"></script>
+</body>
+</html>

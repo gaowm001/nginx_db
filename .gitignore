@@ -8,3 +8,8 @@ __pycache__/
 *.new
 *.log
 *.pyc
+
+# 管理台运行数据与本地配置（含数据库口令，禁止入库）
+admin/data/
+admin/config.json
+admin/config.local.json
