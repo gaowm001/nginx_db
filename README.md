@@ -1,6 +1,27 @@
-# NGXDB
+﻿# NGXDB
 
 基于 **nginx（自研 C 模块）+ PostgreSQL 18** 的轻量级 RBAC 权限管理控制台。前端零依赖（纯 HTML/CSS/JS），全部业务逻辑以存储过程/函数形式实现在 PostgreSQL 中；nginx 通过自研模块把 HTTP 请求直接映射为数据库函数调用，**无需 PHP/Node/Java 等中间层**。
+
+## 文档大纲
+
+- [一、项目介绍](#一项目介绍) —— 是什么 / 架构 / 目录结构 / 功能模块 / 优点
+- [二、环境要求](#二环境要求)
+- [三、安装](#三安装) —— Linux 一键安装 / Windows 一键安装 / Linux 手动分步安装
+- [四、使用说明](#四使用说明) —— 登录 / 接口约定 / 权限体系
+- [五、安全提示](#五安全提示重要)
+- [六、常见问题 FAQ](#六常见问题faq)
+- [七、默认配置一览](#七默认配置一览)
+- [八、修复记录](#八修复记录2026-11-11) —— POST body / finalize / 登录跳转 / 性能排查
+- [九、功能更新：树状展示](#九功能更新树状展示2026-11-12)
+- [十、功能更新：接口文档](#十功能更新接口文档2026-11-13)
+- [十一、系统运行原理](#十一系统运行原理)
+- [十二、二次开发指南](#十二二次开发指南新增业务系统人事--财务--erp-等)
+- [十三、开发注意事项](#十三开发注意事项重要)
+- [十四、安全与性能验证](#十四安全与性能验证实测2026-11-13)
+- [十五、等保 2.0 合规检查与整改](#十五等级保护-20-合规检查与整改2026-11-13)
+- [十六、Windows 环境支持](#十六windows-环境支持)
+- [十七、本地管理台 admin](#十七本地管理台admin)
+- [十八、许可证](#十八许可证)
 
 ## 一、项目介绍
 
@@ -85,7 +106,7 @@ nginx_db/
    父子表、树形表三类常见形态，并支持事务试跑（`--apply-tx`）后再正式上线。
 7. **可重复部署、可演进**：`extension/ngxdb_postgresql.sql` 是唯一事实来源，权限
    节点等写入均幂等（`ON CONFLICT (sysactionid) DO UPDATE`，重复发布自愈迁移），新环境按 dump 一步重建；人事、
-   财务、ERP 等新业务按第十二章的模式即可持续叠加，互不干扰。
+   财务、ERP 等新业务按第十一章的模式即可持续叠加，互不干扰。
 8. **安全细节到位**：业务函数统一 `SECURITY DEFINER` + 最小化 OWNER、SQL 全程
    参数化、错误码体系化（errorcode 表驱动文案）、关键操作留痕于系统日志，
    鉴权失败/越权访问在后端强制拦截。
@@ -98,7 +119,8 @@ nginx_db/
 
 ## 三、安装
 
-### 方式 A：一键安装（推荐）
+### 3.1 Linux：一键安装（推荐）
+
 ```bash
 sudo bash install.sh
 ```
@@ -111,7 +133,8 @@ sudo bash install.sh
 | `--skip-deps` / `--skip-nginx` / `--skip-db` / `--skip-html` / `--skip-verify` | 分步控制，可单独重跑某一步 |
 | 环境变量 | `NGINX_PREFIX`(默认 /opt/nginx)、`LISTEN_PORT`(默认 80)、`PG_DBNAME`(默认 ngxdb)、`PG_APP_USER`(默认 gm)、`PG_APP_PASSWORD`、`NGINX_VERSION`(默认 1.30.6) 等 |
 
-### 方式 C：Windows 一键安装（install.py，推荐 Windows 用户）
+### 3.2 Windows：一键安装（install.py，推荐 Windows 用户）
+
 Windows 下无需手动装依赖：`install.py` 会在脚本所在目录完成**全流程**——下载 PostgreSQL 18 便携版与 nginx、自动用 MinGW/MSYS2 编译含自研 postgres 模块的 nginx.exe、initdb 建库导 SQL、生成 nginx.conf、部署前端、启动 admin 管理台并验证登录。
 
 ```powershell
@@ -119,6 +142,7 @@ Windows 下无需手动装依赖：`install.py` 会在脚本所在目录完成**
 py -3 install.py              # 图形界面（默认）：填端口/版本，点"开始安装"
 py -3 install.py --cli        # 终端交互模式
 ```
+
 也可双击 `安装.bat`（自动请求管理员权限）启动图形界面。
 
 - **产物目录**（均在脚本所在目录）：`downloads\`（安装包缓存）、`pgsql\`（PostgreSQL 18 + data）、`nginx\`（含编译好的 nginx.exe 与运行时 DLL）、`build\`（编译工作区）
@@ -128,7 +152,8 @@ py -3 install.py --cli        # 终端交互模式
 - **卸载**：点安装窗口的"卸载..."按钮（或 `py -3 install.py --uninstall`）按项勾选；`py -3 install.py --cli --uninstall-all` 一键全部卸载
 - **排错**：全过程日志实时显示在窗口内，并写入 `install.log`
 
-### 方式 B：手动分步安装
+### 3.3 Linux：手动分步安装
+
 **（1）安装依赖**
 ```bash
 sudo apt-get update
@@ -232,7 +257,7 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 - **`libpq` 链接错误**：安装 `libpq-dev`。
 - **`plpython3u` 缺失**：安装 `postgresql-plpython3-18`。
 - **端口 80 被占用**：修改 `LISTEN_PORT` 或 nginx.conf 的 `listen`。
-- **系统日志为空**：确认 `public.serverlog` 表存在（见"方式 B（3）"）。
+- **系统日志为空**：确认 `public.serverlog` 表存在（见 3.3 节（3））。
 - **Oracle 模块**：需安装 Oracle Instant Client 并提供 `oci.h`，且 `oracle/config` 的 CORE_INCS/CORE_LIBS 需指向你的 Oracle 库路径后再 `--with-oracle`。
 - **登录后多个页面间歇性提示「子系统信息出错(100012)」或「非法登录(100005)」**：这是旧版 `postgres` 模块的缺陷——它在 POST 请求体尚未读全时就处理，导致 `token` 参数丢失。修复：重新编译并安装 nginx（`sudo bash rebuild_nginx.sh`，脚本已随附本目录）后即恢复正常。详见「八、修复记录」。
 
@@ -304,7 +329,7 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 - **效果**：权限管理页呈现为「系统 → 系统管理 → 系统权限 → 新增/修改/…」的层级树；部门管理随部门数据增加自动成树。
 - **涉及文件**：`extension/ngxdb_postgresql.sql`、`html/assets/modules.js`（`P()` 新增 `tree` 参数）、`html/assets/app.js`（`treeDepth`/`renderRows`）、`html/assets/suite.css`（树样式）。
 
-### 9.1 树状模块升级为“资源管理器”两栏布局（2026-11-12）
+### 10.1 树状模块升级为“资源管理器”两栏布局（2026-11-12）
 
 权限管理、部门管理等树状模块的界面由“整表缩进”升级为模仿 Windows 资源管理器的**左右两栏**：
 
@@ -319,7 +344,7 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
   右栏用 `idpath === 父id + '.' + 自身id` 过滤直接下级；资源版本升至 `?v=7`。
 - 非树模块（系统管理、员工、日志、省市等）保持原有单表格布局，不受影响。
 
-### 9.2 数据库函数缺陷修复（2026-11-12，由测试发现）
+### 10.2 数据库函数缺陷修复（2026-11-12，由测试发现）
 
 测试套件（`test/`）运行暴露 4 个真实 SQL 缺陷，均已修复并同步到在用库（CREATE OR REPLACE）：
 
@@ -335,7 +360,7 @@ curl -s -X POST http://HOST/func/sysinfo/help_query -d "token=<TOKEN>"
 **2026-11-14 追加修复**：`operinfopermission_query` 分页分支引用不存在的别名 `toper` 导致接口报错，已修复；
 员工/角色权限子表保存由“先删后插”改为“按子表主键增删改”（删除→更新→插入），子表主键保持稳定。
 
-### 9.3 环境问题：systemd nginx.service 循环重启（重要）
+### 10.3 环境问题：systemd nginx.service 循环重启（重要）
 
 本机存在 `/etc/systemd/system/nginx.service`（enabled），与手动运行中的 `/opt/nginx` nginx **争抢 80 端口**：systemd 服务陷入每数秒一次的重启循环，error.log 被 `bind() to 0.0.0.0:80 failed` 刷屏。该循环会造成**间歇性 POST /func 连接被断开**（表现为页面偶发无响应、测试报 RemoteDisconnected）。
 
@@ -381,7 +406,7 @@ sudo systemctl disable --now nginx    # 停用 systemd 版，继续用 /opt/ngin
 
 ## 十一、系统运行原理
 
-### 11.1 总体链路
+### 10.1 总体链路
 
 本项目是“**nginx + PostgreSQL 函数**”的瘦后端架构：没有 Java/Python/Node 等应用层，
 HTTP 请求由 nginx 的 `ngx_http_postgres_module` 直接转发为对 PostgreSQL 函数的调用，
@@ -400,7 +425,7 @@ PostgreSQL
    └─ gm.returnjson(错误码, 数据)     ← 统一 JSON 包装：{errorcode, message, info}（错误码分段规范见 docs/DEVELOPMENT.md「错误码编码规范」）
 ```
 
-### 11.2 一次典型请求的完整流程（以“查询员工列表”为例）
+### 10.2 一次典型请求的完整流程（以“查询员工列表”为例）
 
 1. **登录换取 token**：前端调 `sysinfo.login`，校验口令后写 `sysinfo.operinfo.tokenkey`
    与 `tokentime`（有效期），返回 token 与该员工的权限点集合 `actions`。
@@ -416,7 +441,7 @@ PostgreSQL
 5. **前端渲染**：`app.js` 依 `modules.js` 的模块声明渲染表格/表单/树，错误码非 0
    时按 `errorcode` 表提示。
 
-### 11.3 权限模型（新增模块必须理解）
+### 10.3 权限模型（新增模块必须理解）
 
 - `sysinfo.sysaction` 是**权限树**：`systemid` 所属系统、`sysactionid` 节点号、
   `idpath` 全路径（如 `100.9113.224`）、`actionid` 操作点（为空表示菜单/目录节点，
@@ -426,7 +451,7 @@ PostgreSQL
 - 员工授权写入 `sysinfo.operinfo`/关联表，登录时展开成 `actions` 数组下发前端；
   后端函数仍会再次校验（前端隐藏按钮只是体验优化，**不是安全边界**）。
 
-### 11.4 前端机制
+### 10.4 前端机制
 
 - `modules.js` 用 `P()` 声明每个模块：模块 ID、标题、菜单分组、权限点、接口 base、
   列定义、表单字段、操作权限、树形标志等。**大多数 CRUD 页面零定制**，由 `app.js`
@@ -435,11 +460,11 @@ PostgreSQL
 - 静态资源版本号在 `index.html`（当前 `v=10`）：改动 js/css 后必须 +1，否则浏览器
   缓存旧文件。
 
-### 11.5 函数缓存与发布（重要）
+### 10.5 函数缓存与发布（重要）
 
 nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。因此：
 - 新增/改名/删除 PostgreSQL 函数后，必须 `sudo systemctl restart nginx`（或
-  stop + 清 pid + start，见第九章 9.3），否则 HTTP 层报“函数不存在”。
+  stop + 清 pid + start，见 10.3 节），否则 HTTP 层报“函数不存在”。
 - 只改函数体（`CREATE OR REPLACE` 同签名）不影响缓存，可不用重启。
 
 ## 十二、二次开发指南：新增业务系统（人事 / 财务 / ERP 等）
@@ -449,7 +474,7 @@ nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。�
 本章规范已固化为大模型代码生成 skill：`.claude/skills/ngxdb-development/`
 （SKILL.md + reference.md），供 AI 编码助手在本仓库内自动遵循。
 
-### 12.1 总体思路与目录规划
+### 11.1 总体思路与目录规划
 
 | 步骤 | 产物 | 说明 |
 |---|---|---|
@@ -460,7 +485,7 @@ nginx postgres 模块在 **worker 启动时缓存可调用的函数清单**。�
 | 5. 声明前端 | `html/assets/modules.js` 的 `P()` | 大多数 CRUD 页面零 JS 定制 |
 | 6. 部署验证 | psql 应用 + nginx restart + 冒烟 | 见 12.5 上线清单 |
 
-### 12.2 方式一：gen_module.py 一键生成（推荐，覆盖大部分场景）
+### 11.2 方式一：gen_module.py 一键生成（推荐，覆盖大部分场景）
 
 标准单表、主子表、树形表三类需求**不要手写**，用生成器（工具会同时更新 SQL dump、
 modules.js、index.html 版本号、README、TEST_PLAN）：
@@ -504,7 +529,7 @@ sudo systemctl restart nginx     # 新函数必须重启 nginx 才能经 HTTP �
 命名，按 actionurl 判重）。不生成任何 CREATE TABLE；子表的 `isused/systemid`
 按实际结构条件化写入。
 
-### 12.3 方式二：手工开发（复杂业务，如 ERP 单据联动）
+### 11.3 方式二：手工开发（复杂业务，如 ERP 单据联动）
 
 超出“单表 CRUD”的业务（多表事务、审批流、跨域统计）手工写函数，骨架照抄现有模块：
 
@@ -547,7 +572,7 @@ ALTER FUNCTION hr.emp_query(varchar,int,int,varchar) OWNER TO gm;
 出入库同时扣库存）必须放在**同一个函数体内**完成，依赖 plpgsql 异常自动回滚，
 不要让前端分两次调用拼接事务。
 
-### 12.4 权限节点设置（以人事系统为例）
+### 11.4 权限节点设置（以人事系统为例）
 
 在 `sysinfo.sysaction` 中为人事系统建立自己的菜单与操作节点（编号建议按域分段，
 避开已用的 91xx/224 等）：
@@ -573,7 +598,7 @@ ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXC
 - 给具体员工授权：走“员工权限”页面（operinfo 模块）勾选；admin 无需配置（根 100 自动全权）。
 - 财务、ERP 同理另起号段（如 93xx、94xx），**编号一经使用不要复用/改动**。
 
-### 12.5 上线清单（每个新模块都走一遍）
+### 11.5 上线清单（每个新模块都走一遍）
 
 1. SQL 已同步进 `extension/ngxdb_postgresql.sql`（唯一事实来源，手工开发也要回写 dump）。
 2. `--apply`（或 psql 执行）到在用库；`sysaction` 插入用了 `ON CONFLICT (sysactionid) DO UPDATE`（幂等且自愈迁移），可重复执行。
@@ -599,7 +624,7 @@ ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXC
    让 plpgsql 异常自动回滚；不要靠前端顺序调用多个接口“拼事务”。
 6. **主键与分页**：主键用 `bigint`（PG18 下函数参数也声明 `bigint`，不要用无类型
    字面量重载）；列表查询必须带 `total` + 分页，避免全表拉取。
-7. **nginx 函数缓存**：新增/改名/删除函数后必须重启 nginx（第九章 9.3 的 pid 坑）；
+7. **nginx 函数缓存**：新增/改名/删除函数后必须重启 nginx（见 10.3 节的 systemd pid 坑）；
    仅改函数体不用重启。
 8. **dump 与在用库同步**：`extension/ngxdb_postgresql.sql` 是唯一事实来源。任何在
    在用库手工执行的 DDL/权限变更，必须回写 dump（或直接用 gen_module.py 生成），
@@ -620,7 +645,7 @@ ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXC
 以下数据均在当前部署环境（VMware 虚拟机，nginx + PostgreSQL 18 同机，本机回环
 `127.0.0.1`，nginx 单实例）实测取得，可复现。
 
-### 14.1 安全验证（全部在在用系统上实测通过）
+### 13.1 安全验证（全部在在用系统上实测通过）
 
 | # | 用例 | 输入 | 实际返回 | 结论 |
 |---|---|---|---|---|
@@ -650,7 +675,7 @@ ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXC
   无法解密**（所有在线用户需重新登录）；请仅在密钥泄露等必要情况下轮换，并通知
   该系统用户重新登录。
 
-### 14.2 性能验证（curl 实测，15 次取平均）
+### 13.2 性能验证（curl 实测，15 次取平均）
 
 | 接口 | 场景 | 平均 | 最快 | 最慢 |
 |---|---|---|---|---|
@@ -664,7 +689,7 @@ ON CONFLICT (sysactionid) DO UPDATE SET isused=1, upid=EXCLUDED.upid, idpath=EXC
 其中鉴权（两层解密 + 多表校验）占比很小，绝大多数时间是 PG 执行业务 SQL 与
 JSON 组装。对中后台管理系统而言，该延迟远低于人的感知阈值（约 100ms）。
 
-### 14.3 与 Tomcat（Spring Boot 典型栈）的比较
+### 13.3 与 Tomcat（Spring Boot 典型栈）的比较
 
 | 维度 | 本系统（nginx + PG 函数） | Tomcat + Spring Boot（典型三层） |
 |---|---|---|
@@ -685,7 +710,7 @@ JSON 组装。对中后台管理系统而言，该延迟远低于人的感知阈
 
 对照《网络安全等级保护基本要求》（GB/T 22239-2019）技术要求逐项自查，结果如下。
 
-### 15.1 检查前已符合的控制点
+### 14.1 检查前已符合的控制点
 
 | 等保要求 | 系统现状 |
 |---|---|
@@ -697,7 +722,7 @@ JSON 组装。对中后台管理系统而言，该延迟远低于人的感知阈
 | 错误信息保护 | 统一错误码，不泄露堆栈/SQL |
 | 身份标识唯一 | 账号唯一、token 与操作员绑定 |
 
-### 15.2 本轮已整改项（代码/配置已落地并验证）
+### 14.2 本轮已整改项（代码/配置已落地并验证）
 
 | # | 等保要求 | 整改前问题 | 整改措施 | 验证结果 |
 |---|---|---|---|---|
@@ -710,7 +735,7 @@ JSON 组装。对中后台管理系统而言，该延迟远低于人的感知阈
 | 7 | 数据备份 | 无自动备份 | tools/backup.sh：每日 pg_dump 自定义格式，本地保留 14 份，附恢复命令与异地同步示例；cron 每日 2 点执行 | 脚本试运行生成 dump 文件 |
 | 8 | 边界-资源控制 | 无接口限流 | nginx limit_req（50r/s，burst 100）+ limit_conn，防暴力破解/资源耗尽 | 部署后超频请求被拒 |
 
-### 15.3 部署侧整改执行方法
+### 14.3 部署侧整改执行方法
 
 数据库层整改已随 dump 应用；nginx 层（TLS/限流/ngxapp 口令轮换/备份 cron）需要 root，
 已封装为一键脚本：
@@ -724,7 +749,7 @@ sudo bash tools/secure_deploy.sh          # Linux
 # 验证：curl -k https://127.0.0.1/func/sysinfo/login ... （原 http 地址 301 跳转 https）
 ```
 
-### 15.4 仍需管理/环境层面落实的事项
+### 14.4 仍需管理/环境层面落实的事项
 
 1. **双因素认证**：等保三级要求两种以上鉴别技术组合，当前仅口令；建议按定级增加
    OTP/证书/短信因子。
@@ -739,7 +764,7 @@ sudo bash tools/secure_deploy.sh          # Linux
 7. **漏洞与补丁管理**：nginx/PostgreSQL 应纳入定期漏洞扫描与升级流程。
 8. **物理环境、网络边界设备策略**等属于机房与网络层，需按部署环境另行评估。
 
-### 15.5 局限性说明
+### 14.5 局限性说明
 
 - serverlog.clientip 记录的是 **PG 看到的连接地址**（本机部署时为 127.0.0.1），
   真实客户端 IP 以 nginx access log 为准；如需在审计行中记录真实 IP，可由
@@ -752,7 +777,7 @@ sudo bash tools/secure_deploy.sh          # Linux
 
 项目脚本分为三类，Windows 下的可用性如下：
 
-### 16.1 跨平台 Python 工具（直接可用）
+### 15.1 跨平台 Python 工具（直接可用）
 
 | 脚本 | 说明 |
 |---|---|
@@ -760,7 +785,7 @@ sudo bash tools/secure_deploy.sh          # Linux
 | `test/test_ngxdb_db.py` | 通过 psql 子进程执行，Windows 需 psql 在 PATH；口令用环境变量 `PGPASSWORD` 或 `--password` 传入。 |
 | `test/test_ngxdb_web.py` | 默认目标 `https://127.0.0.1`（自动忽略自签证书）；也可 `--base http://...` 指向未启用 TLS 的实例。 |
 
-### 16.2 PowerShell 工具（Windows 等价实现）
+### 15.2 PowerShell 工具（Windows 等价实现）
 
 | Linux 版 | Windows 版 | 用途 |
 |---|---|---|
@@ -784,7 +809,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\run_all.ps1 -PgPassword
   SYSTEM/Administrators，仅供计划任务中的备份脚本读取。
 - 计划任务以 SYSTEM 身份每日 02:00 运行 `backup.ps1`。
 
-### 16.3 Windows 限制与说明
+### 15.3 Windows 限制与说明
 
 1. `install.sh`（apt/systemd 编译安装）与 `rebuild_nginx.sh`（gcc 重新编译 nginx）
    为 **Linux 专用**；Windows 下请使用 nginx 官方 Windows 二进制，postgres 模块需
@@ -839,5 +864,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File test\run_all.ps1 -PgPassword
 - `postgres/ngx_http_postgres_module.c` 为原创实现的 nginx PostgreSQL 网关模块，
   运行时依赖 libpq（PostgreSQL 客户端库，PostgreSQL License）；
 - 各目录内保留的第三方版权与许可声明（如有）仍归其原作者所有。
+
+
 
 
