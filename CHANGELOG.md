@@ -4,6 +4,15 @@
 开发指南、安全与性能验证、等保合规等常设内容；本文档只做追加，不改写历史。
 
 ---
+## 〇、Windows 一键安装 / 卸载（2026-11-19）
+
+- 新增 `install.py`：Windows 图形化一键安装。自动下载 PostgreSQL 18 便携版与 nginx，检测并自动安装编译工具（MinGW-w64 / MSVC Build Tools），现场编译含自研 postgres 模块的 nginx.exe，完成 initdb、建角色、导入 SQL、启用 pgcrypto/plpython3u、生成 nginx.conf、部署前端、启动 admin 管理台并验证登录。
+- 新增 `安装.bat`（双击安装，自动请求管理员权限）与 `启动.bat`（双击启动 PostgreSQL / admin / nginx 并打开系统入口与管理台）。
+- 新增卸载能力：安装窗口"卸载..."按钮或 `py -3 install.py --uninstall` 按项勾选卸载（nginx / 数据库 / PostgreSQL / 管理台配置 / 编译工具 / 下载缓存 / 日志）；`--uninstall-all` 一键全部卸载。
+- admin 管理台 Windows 兼容：psql 输出按 UTF-8 解码、`pgrep` 改用 `tasklist` 统计、生成 `config.local.json` 本机配置。
+- 详见 README「三、安装 → 方式 C：Windows 一键安装」。
+
+---
 ## 一、修复记录（2026-11-11）
 
 **症状**：登录系统后，多个页面间歇性提示「子系统信息出错（100012）」/「非法登录（100005）」。

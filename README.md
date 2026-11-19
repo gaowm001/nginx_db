@@ -111,6 +111,23 @@ sudo bash install.sh
 | `--skip-deps` / `--skip-nginx` / `--skip-db` / `--skip-html` / `--skip-verify` | 分步控制，可单独重跑某一步 |
 | 环境变量 | `NGINX_PREFIX`(默认 /opt/nginx)、`LISTEN_PORT`(默认 80)、`PG_DBNAME`(默认 ngxdb)、`PG_APP_USER`(默认 gm)、`PG_APP_PASSWORD`、`NGINX_VERSION`(默认 1.30.6) 等 |
 
+### 方式 C：Windows 一键安装（install.py，推荐 Windows 用户）
+Windows 下无需手动装依赖：`install.py` 会在脚本所在目录完成**全流程**——下载 PostgreSQL 18 便携版与 nginx、自动用 MinGW/MSYS2 编译含自研 postgres 模块的 nginx.exe、initdb 建库导 SQL、生成 nginx.conf、部署前端、启动 admin 管理台并验证登录。
+
+```powershell
+# 管理员 PowerShell，进入仓库目录
+py -3 install.py              # 图形界面（默认）：填端口/版本，点"开始安装"
+py -3 install.py --cli        # 终端交互模式
+```
+也可双击 `安装.bat`（自动请求管理员权限）启动图形界面。
+
+- **产物目录**（均在脚本所在目录）：`downloads\`（安装包缓存）、`pgsql\`（PostgreSQL 18 + data）、`nginx\`（含编译好的 nginx.exe 与运行时 DLL）、`build\`（编译工作区）
+- **编译工具**：窗口会自动检测 MSVC / MinGW，缺失时可勾选自动安装 MinGW-w64（WinLibs 便携版）或 MSVC Build Tools
+- **安装完成后**：窗口底部"打开系统入口 / 打开管理台"按钮直接可用；默认账号 `admin / 123456`
+- **日常启动**：双击 `启动.bat`（自动拉起 PostgreSQL / admin / nginx 并打开浏览器）
+- **卸载**：点安装窗口的"卸载..."按钮（或 `py -3 install.py --uninstall`）按项勾选；`py -3 install.py --cli --uninstall-all` 一键全部卸载
+- **排错**：全过程日志实时显示在窗口内，并写入 `install.log`
+
 ### 方式 B：手动分步安装
 **（1）安装依赖**
 ```bash

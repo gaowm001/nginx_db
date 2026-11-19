@@ -13,3 +13,12 @@ __pycache__/
 admin/data/
 admin/config.json
 admin/config.local.json
+
+# Windows 一键安装（install.py）的本地产物，禁止入库
+build/
+mingw64/
+pgsql/
+nginx/
+downloads/
+pgrep.cmd
+

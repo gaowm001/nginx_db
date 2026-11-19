@@ -170,7 +170,8 @@ def psql(script, db=None):
         cmd = ['psql', '-X', '-q', '-tA', '-v', 'ON_ERROR_STOP=1',
                '-h', str(CFG['pg_host']), '-p', str(CFG['pg_port']),
                '-U', CFG['pg_user'], '-d', db or CFG['pg_db'], '-f', tmp]
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=60)
         return r.returncode, r.stdout, r.stderr
     finally:
         try:
@@ -1498,13 +1499,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def _info(self):
         ver = qval('select version()').split(',')[0]
-        nproc = subprocess.run(['pgrep', '-c', 'nginx'], capture_output=True, text=True)
+        try:
+            if os.name == 'nt':   # Windows: pgrep 不存在，用 tasklist 统计
+                nr = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq nginx.exe', '/NH'],
+                                    capture_output=True, text=True)
+                workers = str(sum(1 for ln in nr.stdout.splitlines()
+                                  if 'nginx' in ln.lower())) if nr.returncode == 0 else '0'
+            else:
+                nproc = subprocess.run(['pgrep', '-c', 'nginx'], capture_output=True, text=True)
+                workers = nproc.stdout.strip() or '0'
+        except Exception:
+            workers = '0'
         det = detect_pg_db()
         return self._json({'ok': True,
                            'db': {'host': CFG['pg_host'], 'port': CFG['pg_port'],
                                   'name': CFG['pg_db'], 'user': CFG['pg_user'], 'version': ver,
                                   'detect': det},
-                           'nginx': {'workers': (nproc.stdout.strip() or '0'),
+                           'nginx': {'workers': workers,
                                      'deploy_dir': CFG['deploy_dir'],
                                      'deploy_exists': os.path.isdir(CFG['deploy_dir'])},
                            'admin': {'data_dir': DATA, 'lastgen': sorted(LAST_GEN.keys())}})
