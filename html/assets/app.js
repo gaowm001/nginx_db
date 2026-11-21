@@ -1169,9 +1169,9 @@ function permList(raw){
 function openPassModal(){
   var m=Modal.open({title:'修改密码',icon:'lock',
     body:'<div class="form-grid">'
-      +'<div class="field"><label>旧密码</label><input class="input" type="password" id="pass-old" autocomplete="new-password"></div>'
-      +'<div class="field"><label>新密码</label><input class="input" type="password" id="pass-new" autocomplete="new-password"></div>'
-      +'<div class="field"><label>确认新密码</label><input class="input" type="password" id="pass-new2" autocomplete="new-password"></div>'
+      +'<div class="field full"><label>旧密码</label><input class="input" type="password" id="pass-old" autocomplete="new-password"></div>'
+      +'<div class="field full"><label>新密码</label><input class="input" type="password" id="pass-new" autocomplete="new-password"></div>'
+      +'<div class="field full"><label>确认新密码</label><input class="input" type="password" id="pass-new2" autocomplete="new-password"></div>'
       +'</div>',
     footer:'<div class="toolbar__spacer"></div><button class="btn" data-c>取消</button><button class="btn btn--primary" data-ok>'+icon('check',16)+'保存</button>'});
   m.querySelector('[data-c]').addEventListener('click',function(){Modal.close();});

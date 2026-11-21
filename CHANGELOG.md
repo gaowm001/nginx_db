@@ -1629,3 +1629,20 @@ app.js 已同步部署目录并经 nginx 线上确认（app.js?v=104）。
   `<数据库强口令>` 占位符；示例路径 `/home/ad/...` 改为 `/path/to/nginx_db`；
 - 本机运行配置外置到 `admin/config.local.json`（已被 .gitignore 排除），管理台功能不受影响。
 
+---
+
+## 2026-11-17 修复“修改密码”页面两个问题
+
+- **返回无法解析的数据（根因）**：`operator` 模式创建时未授予 `conn`（nginx 连接账号）
+  `USAGE`，调用 `operator.changepassword` 直接被拒；且运行中的 nginx 二进制较旧，
+  错误 JSON 未转义/错误码错乱 → 前端解析失败。修复：`GRANT USAGE ON SCHEMA operator
+  TO conn` + `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA operator TO conn` +
+  `ALTER DEFAULT PRIVILEGES`（并全库排查确认无其他缺失授权）；C 源码中的错误 JSON
+  转义已存在，待下次 `sudo bash rebuild_nginx.sh` 重建后对所有异常路径生效；
+- **页面排列不整齐**：修改密码弹窗的三个密码框位于两列网格中呈 2+1 排布——
+  均加 `full` 类改为整行堆叠（app.js v107）；
+- 实测：错误路径返回合法 JSON（100001 旧密码错误）、成功路径 errorcode 0、
+  新口令登录成功、随后已将 admin 口令恢复为演示口令；
+- 同步修复 `extension/ngxdb_postgresql.sql` 初始化脚本中缺失的 `operator` 模式授权，
+  新装环境不再复现此问题。
+
